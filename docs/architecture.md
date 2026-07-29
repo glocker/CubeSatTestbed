@@ -1,29 +1,114 @@
 # Architecture
 
-Layers:
+`cubesat_testbed` is organized as a deterministic event-driven testbed. The code
+lives under `src/cubesat_testbed`.
 
-1. **DUT / nodes** (`core/dut/`) -- each node has a mode (simulated/
-   software/hardware). This is the mechanism that lets any subsystem be the
-   Device Under Test while everything else runs as a software peer.
+## Package layout
 
-2. **Protocol & transport adapters** (`core/protocol/`, `core/transport/`)
-   -- pluggable encode/decode and send/receive, so the rest of the system
-   never hardcodes "CSP" or "CAN" as assumptions. v1 ships one adapter of
-   each (CSP v2, SocketCAN); more are planned (see README).
+```text
+src/cubesat_testbed/
+  engine.py               # Discrete-event simulation dispatcher
+  fault_injection.py      # Passive fault executor
+  config/parser.py        # TOML setup + YAML scenario parsing
+  scenario/runner.py      # Scenario orchestration over virtual time
+  scenario/assertions.py  # PASS/FAIL assertion primitives
+  dut/manager.py          # Node mode orchestration
+  protocol/csp_v2.py      # libcsp-compatible CSP v2 codec
+  transport/base.py       # Bus adapter interface
+  transport/in_memory.py  # CI/local in-memory bus
+  transport/socketcan.py  # Linux SocketCAN adapter
+  modules/base.py         # Module/FSM contract
+  modules/eps.py          # Generic EPS model
+  modules/payload.py      # Simple payload model
+  modules/obc_peer.py     # Stateless OBC rule engine
+```
 
-3. **Modules** (`modules/`) -- each subsystem type (EPS, OBC Peer, Payload,
-   ...) implements the shared interface in `modules/base.py` and is looked
-   up via `modules/registry.py`. Adding a subsystem type means adding a
-   module, not touching the core.
+## Layers
 
-4. **Scenario engine** (`core/scenario/`) -- runs YAML-defined test
-   scenarios against whatever nodes are currently configured, using
-   assertions and producing a PASS/FAIL report. This is what makes the
-   project a test framework rather than just an emulator.
+1. **DES engine** (`cubesat_testbed.engine`)
+   - Owns virtual time and event ordering.
+   - Dispatches timer, bus, telemetry, command, scenario and fault events.
+   - Does not use wall-clock `sleep()` as the model update mechanism.
 
-The engine and the adapters/scenario runner are universal; the modules are
-not -- see the README's "Core ideas" section for why.
+2. **DUT/node manager** (`cubesat_testbed.dut.manager`)
+   - Tracks node modes: `simulated`, `software`, `hardware`.
+   - Connects each node to the selected protocol and transport adapter.
+   - Keeps DUT selection as configuration, not code.
 
-It's better to have an Event-Driven architecture (event-driven), rather than Time-Driven. The model should not move according to the sleep(0.1) timer, but according to the internal ticks of the virtual core of the simulator (Discrete Event Simulation)
+3. **Protocol and transport adapters**
+   - Protocol: v1 ships CSP v2 only.
+   - Transport: v1 ships `InMemoryBusAdapter` and `SocketCanAdapter`.
+   - Higher layers work with decoded packets/events instead of hardcoding CAN
+     details.
 
+4. **Modules** (`cubesat_testbed.modules`)
+   - Subsystems are isolated finite state machines.
+   - They react to events and scheduled timers.
+   - They do not run independent polling loops.
 
+5. **Scenario runner** (`cubesat_testbed.scenario`)
+   - Executes YAML scenarios against the configured nodes.
+   - Emits deterministic PASS/FAIL assertion results.
+
+6. **Fault Injection Engine** (`cubesat_testbed.fault_injection`)
+   - Passive executor for direct overrides and named fault flags.
+   - Does not evaluate thresholds.
+   - Threshold-triggered behavior is owned by the OBC Peer rule engine.
+
+## Event-driven model
+
+The simulator is reactive. Components communicate through events:
+
+- `TimerEvent` — scheduled model update or timeout.
+- `BusFrameEvent` — encoded frame entering or leaving a transport adapter.
+- `TelemetryEvent` — decoded signal value available to scenarios/rules.
+- `CommandEvent` — named command resolved to a CSP packet.
+- `FaultEvent` — state override, signal override or named fault activation.
+- `AssertionEvent` — scenario assertion evaluation.
+
+Virtual time is the source of truth. If nothing is scheduled, the engine jumps to
+the next event time instead of spinning in idle loops.
+
+## Fault responsibility split
+
+`FaultInjectionEngine` only applies explicit requests:
+
+- `state_override` targets `.model.` paths and changes internal model state.
+- `signal_override` targets `.telemetry.` paths and spoofs outgoing telemetry.
+- `named_fault` activates a module-defined fault flag.
+
+The OBC Peer is the active decision maker. It listens to telemetry and applies
+rules such as:
+
+```text
+IF eps.temperature > 55C for 2s THEN inject_fault("battery_degradation")
+IF eps.voltage < 6.5V for 1s THEN send_csp_cmd("reset_payload")
+```
+
+## CSP v2 golden-vector boundary
+
+The CSP v2 codec is implemented only after repository-owned golden vectors are
+fixed. The vectors are generated by a C helper built against official libcsp
+`v2.1` at commit `48f7fb0` and captured from `vcan0` with `candump`. The actively
+changing `develop` branch is not used as the baseline.
+
+The committed fixture contract is:
+
+- extended CAN ID;
+- raw CAN payload bytes;
+- command used to generate the vector;
+- sibling `*.meta.toml` metadata;
+- pinned libcsp source tag `v2.1` and commit `48f7fb0`.
+
+`src/cubesat_testbed/protocol/csp_v2.py` must match these fixtures byte-for-byte.
+
+## v1 boundaries
+
+- No CSP fragmentation/reassembly.
+- No raw CAN/DBC adapter.
+- No custom protocol plugin.
+- No ACK waiting in OBC Peer rules.
+- No stateful on-enter/on-exit rule engine.
+- No hardware traffic record/replay.
+- No physical lab-equipment fault control via SCPI.
+- Frontend/OpenMCT integration is later work.

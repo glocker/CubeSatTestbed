@@ -1,11 +1,39 @@
 [project]
-name = "cubesat-submodules-virtualizer"
+name = "cubesat_testbed"
 version = "0.1.0"
-description = "Modular CubeSat subsystem emulation / hardware-in-the-loop test framework"
+description = "Deterministic CubeSat subsystem emulation and hardware-in-the-loop testbed"
 requires-python = ">=3.11"
-# planned dependencies: fastapi, uvicorn, python-can, pydantic, pyyaml
-dependencies = []
+license = "Apache-2.0"
+dependencies = [
+    "fastapi>=0.115",
+    "pydantic>=2.8",
+    "PyYAML>=6.0",
+    "python-can>=4.4",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.11",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cubesat_testbed"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true

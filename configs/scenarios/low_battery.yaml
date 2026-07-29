@@ -1,0 +1,18 @@
+name: "EPS Low Battery Protection Test"
+description: "Verify that OBC shuts down payload when battery drops below 30%"
+
+steps:
+  - action: "inject_fault"
+    type: "state_override"
+    target: "eps.model.battery_percent"
+    value: 25
+    duration: "5s"
+
+  - action: "wait"
+    virtual_time: "3s"
+
+  - action: "assert"
+    signal: "payload.telemetry.power_status"
+    op: "=="
+    value: "offline"
+    timeout: "1s"

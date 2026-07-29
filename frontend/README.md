@@ -9,4 +9,4 @@ console:
 - **Live telemetry / frame view** -- current signal values and raw
   frames per node
 
-Talks to the backend (`core/api/server.py`) over REST + WebSocket.
+Talks to the future backend API layer under `src/cubesat_testbed` over REST + WebSocket.

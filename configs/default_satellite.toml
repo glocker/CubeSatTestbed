@@ -1,0 +1,17 @@
+[transport]
+type = "in-memory"
+
+[nodes.obc]
+mode = "simulated"
+module_type = "obc_peer"
+address = 1
+
+[nodes.eps]
+mode = "simulated"
+module_type = "generic_eps"
+address = 2
+
+[nodes.payload]
+mode = "simulated"
+module_type = "simple_payload"
+address = 3

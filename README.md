@@ -1,95 +1,335 @@
-# CubeSat Submodules Virtualizer
+# CubeSatTestbed
+
+`CubeSatTestbed` is a modular CubeSat subsystem emulation and hardware-in-the-loop test framework.
 
 ## What this is
-A modular CubeSat subsystem emulation and hardware-in-the-loop test framework,
-built around a **Device Under Test (DUT)** concept: any subsystem (OBC, EPS,
-ADCS, payload, ...) can be connected as real hardware, while every other
-subsystem it talks to is replaced by a configurable software peer. Switching
+
+The framework is built around a **Device Under Test (DUT)** concept: any subsystem
+(OBC, EPS, ADCS, payload, ...) can be connected as real hardware, while every
+other subsystem it talks to is replaced by a configurable software peer. Switching
 which node is real and which is simulated is a config change, not a code change.
 
 ## Why
-- Commercial subsystem simulators (GomSpace, EnduroSat, ...) are proprietary
-  and tied to specific hardware.
-- Heavier open-source stacks (NASA 42, NOS3) are full mission simulators, not
-  a lightweight drop-in test harness.
-- Many teams fall back to hardcoded stubs inside their own flight code
-  (`if (testing) { voltage = 12.0; }`), which never exercises the real bus,
-  and never gives you a pass/fail test result.
+
+- Commercial subsystem simulators are proprietary and tied to specific hardware.
+- Full mission simulators are often too heavy for focused subsystem verification.
+- Hardcoded stubs inside flight code do not exercise the real bus and do not
+  produce scenario-level PASS/FAIL results.
 
 ## Core ideas
 
-### 1. A universal engine, not universal subsystem models
-No single "generic EPS" can faithfully stand in for a GomSpace NanoPower, an
-EnduroSat EPS, and a university team's home-built board at once — their
-commands, telemetry, state machines, channel counts and protections are all
-different. What *is* universal is the framework: the DUT/peer mechanism,
-protocol and transport adapters, and the scenario/assertion engine. Concrete
-subsystems are plugins built on top of that framework, not baked into it.
+### 1. Universal engine, not universal subsystem models
+
+No single "generic EPS" can faithfully stand in for every real EPS board. Real
+hardware differs in commands, telemetry layout, protections, channel counts and
+state machines. The universal part of this project is the engine: DUT/peer
+selection, protocol and transport adapters, deterministic scenario execution,
+fault injection and assertions. Concrete subsystem behavior lives in modules.
 
 ### 2. DUT + switchable node modes
-Every node in a test setup has a `mode`: `simulated`, `software`, or
-`hardware`. Example: to test a real OBC board, set `obc: hardware` (talking
-over a real CAN adapter) while `eps: simulated` and `payload: simulated` run
-as software peers. To later test a real EPS board instead, flip `eps` to
-`hardware` and `obc` to `simulated` (running the OBC Peer plugin) — no code
-changes, only config.
 
-### 3. Scenario engine + assertions + PASS/FAIL reporting
-Test scenarios are defined in YAML: send a command, wait, inject a fault,
-assert that a telemetry signal reaches an expected value within a timeout.
-The runner produces a PASS/FAIL report per assertion. This is what turns the
-project from "a telemetry generator" into an actual test framework.
+Every node has a `mode`:
 
-## Protocol support
-**v1 ships CSP v2 only** (48-bit header, the current libcsp default) — this
-is the primary, professional-standard protocol target for this project.
+- `simulated` — a module inside `cubesat_testbed` emulates the subsystem.
+- `software` — an external software implementation runs as a peer.
+- `hardware` — a real board is reached through a real bus adapter.
 
-Planned for later (not built in v1, interface designed to allow it):
-- CSP v1 (32-bit header) — legacy hardware compatibility
-- `raw_can` — plain CAN frames via a DBC file, common in university/hobbyist
-  setups that don't use libcsp
-- `custom` / `codec_plugin` — user-supplied encode/decode plugin for a
-  mission-specific protocol that isn't CSP or DBC-described CAN at all
+Example: to test a real OBC board, set `obc = hardware` and keep `eps` and
+`payload` simulated. To later test a real EPS board, flip `eps = hardware` and
+run `obc` as the OBC Peer module.
 
-## Modules (v1)
-- **Generic EPS** — electrical power system
-- **OBC Peer** — a rule-engine mock OBC ("if signal X crosses threshold, send
-  command Y"), used when a real EPS/ADCS/payload is the DUT and needs
-  something to talk to
-- **Simple Payload** — basic power-draw + command/data-volume behavior,
-  chosen over a thermal module as the third v1 module because it exercises
-  cross-module interaction more directly
+### 3. Deterministic scenarios with PASS/FAIL reports
 
-**Planned, not in v1** (placeholders only, so the idea isn't lost):
-- **Thermal** — simple RC-style temperature model
-- **ADCS** — attitude dynamics; a much bigger scope on its own (quaternions,
-  sensor models), deliberately deferred
+Scenarios are declarative YAML scripts: inject a fault, wait in virtual time,
+send a command, assert that telemetry reaches an expected value. The runner is
+built on virtual time and produces a PASS/FAIL report per assertion.
 
-## Fault injection
-Two categories, both discussed here but only the first is built in v1:
-- **Virtual-environment faults** (v1): undervoltage, overcurrent, thermal
-  spike, dropped/duplicated telemetry, delayed packets, bus-off — injected
-  directly into a simulated module's model.
-- **Real-device verification faults** (planned, later): when the DUT is real
-  hardware, the framework can't directly force a physical fault — that needs
-  lab equipment (a programmable power supply / electronic load) driven over
-  SCPI, synchronized with the software side. This is a future integration,
-  not part of the current scope.
+## Product v1 scope
 
-Uplink is treated as a command source with its own fault scenarios (malformed
-parameters, replayed/delayed commands, sequence-counter violations, commands
-sent during safe mode, lost ACKs) — not a full RF/CCSDS simulation in v1.
+v1 is the first version of this product. It is intentionally narrow.
 
-## Architecture
-Architecture described here `docs/architecture.md`.
+### Protocol support
+
+v1 implements **CSP v2 only**.
+
+The target runtime profile is:
+
+- libcsp-compatible CSP v2 packet pack/unpack;
+- validation against project-owned golden binary vectors generated from official
+  libcsp `v2.1` at commit `48f7fb0`;
+- classic CAN 2.0 frames with 8-byte data fields;
+- extended 29-bit CAN identifiers only;
+- single-frame packets only;
+- no CSP fragmentation/reassembly in v1.
+
+The config exposes the logical CSP fields required by libcsp/CSP routing:
+
+- `priority`
+- `source`
+- `destination`
+- `destination_port`
+- `source_port`
+- `flags`
+
+The exact wire layout is locked by committed golden vectors, not by informal
+README prose. If a packet cannot fit into one classic CAN frame under the chosen
+CSP-over-CAN profile, it is rejected in v1.
+
+#### CSP golden-vector workflow
+
+The project does not depend on third-party packet dumps. Golden vectors are
+created inside this repository from the official libcsp `v2.1` release at commit
+`48f7fb0`. The actively changing `develop` branch is not used as the baseline.
+
+The intended workflow uses `vcan0` consistently:
+
+1. `docker-compose up --build` builds the libcsp-based helper utility.
+2. The generated C binary appears at `tests/golden_vectors/bin/csp_client` inside
+   the container.
+3. Start CAN capture inside the container:
+
+   ```sh
+   candump vcan0 > /app/tests/golden_vectors/ping.txt &
+   ```
+
+4. Send a reference packet with the C helper:
+
+   ```sh
+   /app/tests/golden_vectors/bin/csp_client -c vcan0 -p -d 2
+   ```
+
+5. Stop capture and commit the resulting fixture under `tests/golden_vectors/`.
+6. Commit a sibling metadata file next to the dump, for example
+   `tests/golden_vectors/ping.meta.toml`.
+
+Python development of `src/cubesat_testbed/protocol/csp_v2.py` starts after the
+vectors are fixed. The codec must match these fixtures byte-for-byte in pytest:
+extended CAN ID and raw CAN payload.
+
+Planned later, not implemented in v1:
+
+- CSP v1 for legacy hardware;
+- raw CAN/DBC adapter;
+- custom mission codec plugin;
+- CSP fragmentation/reassembly.
+
+### AetherFlow boundary
+
+`AetherFlow` and `cubesat_testbed` are separate projects. v1 does **not** reuse
+or expose the AetherFlow CAN wire protocol. The signal codec design may reuse
+lessons from AetherFlow, but the v1 protocol layer is CSP v2.
+
+### Modules
+
+v1 modules:
+
+- **Generic EPS** — battery/load/power-mode behavior and EPS telemetry.
+- **OBC Peer** — stateless rule-engine mock OBC.
+- **Simple Payload** — basic power draw and command/data-volume behavior.
+
+Stretch / later:
+
+- **Thermal** — simple RC-style model.
+- **ADCS** — deferred; attitude dynamics are intentionally out of v1 scope.
+
+### Fault injection
+
+Fault handling is split into two responsibilities.
+
+#### Fault Injection Engine
+
+`cubesat_testbed.fault_injection` is a passive executor of external commands. It
+does not know about thresholds and does not evaluate rules.
+
+It supports:
+
+1. **Direct overrides**
+   - `state_override`: override internal model state, e.g.
+     `eps.model.temperature = 95.0` for `10s`.
+   - `signal_override`: spoof outgoing telemetry/raw signal value, e.g.
+     `eps.telemetry.voltage = 4500` for `5s`.
+2. **Named fault flags**
+   - Activate a named fault inside a module, e.g. `battery_cell_dead`.
+   - The module's physical model reacts to the flag and evolves normally from
+     that altered state.
+
+Overrides expire by virtual time / cycles as defined by the scenario. Named
+faults remain active until cleared or until the module's own logic clears them.
+
+#### OBC Peer / Rule Engine
+
+Threshold-triggered behavior belongs to the OBC Peer rule engine, not to the
+Fault Injection Engine.
+
+The OBC Peer listens to decoded telemetry, evaluates rules of the form
+`IF <condition> THEN <action>`, and can:
+
+- send a named CSP command through the configured codec/bus;
+- call the Fault Injection Engine to trigger a named fault or override.
+
+v1 rule semantics:
+
+- supports threshold conditions;
+- supports `for` duration on a trigger;
+- supports `cooldown`;
+- does not wait for ACKs;
+- commands are configured as named commands mapped to binary payloads;
+- no stateful "on enter/on exit" rules in v1.
+
+### Config and scenario files
+
+Static CubeSat/testbed setup uses TOML:
+
+```toml
+[transport]
+type = "in-memory"
+
+[nodes.obc]
+mode = "simulated"
+module_type = "obc_peer"
+address = 1
+
+[nodes.eps]
+mode = "simulated"
+module_type = "generic_eps"
+address = 2
+```
+
+Scenario scripts use YAML:
+
+```yaml
+name: "EPS Low Battery Protection Test"
+description: "Verify that OBC shuts down payload when battery drops below 30%"
+
+steps:
+  - action: "inject_fault"
+    type: "state_override"
+    target: "eps.model.battery_percent"
+    value: 25
+    duration: "5s"
+
+  - action: "wait"
+    virtual_time: "3s"
+
+  - action: "assert"
+    signal: "payload.telemetry.power_status"
+    op: "=="
+    value: "offline"
+    timeout: "1s"
+```
+
+Pydantic validates both setup config and scenario DSL. Python `tomllib` is used
+for TOML parsing.
+
+### Signal codec v1
+
+The v1 binary signal codec is intentionally small:
+
+- byte offsets only;
+- no bit-level packing;
+- endianness: `big` and `little`;
+- scalar integer and float fields only;
+- signed and unsigned integers;
+- IEEE 754 floats;
+- `scale` / `offset` conversion between raw bytes and physical values;
+- optional passive metadata: `units`, `min`, `max`.
+
+No arrays, enums, Motorola/Intel bit numbering, or custom field plugins in v1.
+
+### Runtime model
+
+v1 is deterministic by default:
+
+- central discrete-event simulation loop;
+- virtual time, not wall-clock sleeps;
+- reproducible event ordering;
+- no background polling loops inside modules;
+- physical models update on scheduled events/timers.
+
+Transport adapters in v1:
+
+- `InMemoryBusAdapter` — CI/tests/local simulation without SocketCAN or root
+  privileges;
+- `SocketCanAdapter` — Linux HIL/Docker path through `python-can` and `vcan0` or
+  a physical CAN interface.
+
+Hardware traffic record/replay is out of v1 scope.
+
+## Development workflow
+
+`uv` is the only dependency and environment-management tool for this project.
+Do not use `pip`, Poetry, Pipenv, or a second lockfile workflow for normal
+development. Python is pinned for tooling by `.python-version`. Commit `uv.lock`;
+CI installs from it with `uv sync --extra dev --locked`.
+
+Local workflow:
+
+```sh
+uv sync --extra dev
+uv run ruff check .
+uv run mypy src
+uv run pytest
+```
+
+Formatting is handled by Ruff as well; Black is not used:
+
+```sh
+uv run ruff format .
+```
+
+CI runs the same toolchain through GitHub Actions and also checks Ruff formatting.
+
+## Project roadmap
+
+### Phase 0: Dev automation
+
+- [x] `src/cubesat_testbed` package layout.
+- [x] `uv` workflow and committed `uv.lock`.
+- [x] GitHub Actions baseline: Ruff format check, Ruff lint, mypy, pytest.
+
+### Phase 1: CSP source of truth
+
+- [ ] Pin official libcsp `v2.1` at commit `48f7fb0`.
+- [ ] Build `tests/golden_vectors/bin/csp_client` in Docker.
+- [ ] Generate and commit `vcan0` golden-vector fixtures plus sibling `*.meta.toml` files under `tests/golden_vectors/`.
+- [ ] Add pytest fixture loader for golden vectors.
+- [ ] Implement CSP v2 single-frame codec only after vectors are fixed.
+
+### Phase 2: Core Engine & CLI
+
+- [ ] In-memory bus adapter for CI/integration tests.
+- [ ] Deterministic DES core loop with virtual timeline.
+- [ ] TOML setup parser and YAML scenario runner schemas.
+- [ ] Byte-aligned signal codec.
+- [ ] Fault Injection Engine: state override, signal override, named faults.
+- [ ] Generic EPS, OBC Peer and Simple Payload modules.
+- [ ] Console PASS/FAIL scenario report.
+- [ ] SocketCAN adapter for Linux/HIL.
+
+### Phase 3: Mission Control API
+
+- [ ] FastAPI wrapper around the simulation core.
+- [ ] WebSocket streams for live telemetry and parsed bus events.
+- [ ] REST endpoints for ad-hoc fault injection.
+
+### Phase 4: Visual Test Harness UI
+
+- [ ] Telemetry dashboard.
+- [ ] Interactive virtual timeline.
+- [ ] Live bus analyzer for parsed CSP frames.
+- [ ] Fault control panel.
 
 ## Stack
-- Backend: Python (FastAPI, python-can, CSP v2 pack/unpack)
-- Frontend: web UI for DUT/node config, fault injection, scenario runs, and
-  live telemetry — built after the core engine and scenario runner work
-  end-to-end via the console
-- Docker Compose to run the framework + virtual CAN bus + optional OpenMCT
-  bridge together
+
+- Python `>=3.11`
+- Pydantic for config/scenario validation
+- PyYAML for scenario files
+- python-can for SocketCAN/HIL
+- FastAPI/Uvicorn for later API phase
+- uv for dependency/environment management
+- pytest, pytest-asyncio, ruff and mypy for development
+- Ruff for both linting and formatting
 
 ## License
-TBD
+
+Apache License 2.0.
