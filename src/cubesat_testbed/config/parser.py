@@ -28,8 +28,31 @@ _SCHEMA_MODEL_CONFIG = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _PATH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$")
-_DURATION_RE = re.compile(r"^([0-9]+)\s*([A-Za-z]*)$")
+_DURATION_RE = re.compile(r"^([0-9]+)\s*([A-Za-zµ]*)$")
 _CYCLE_RE = re.compile(r"^([0-9]+)\s*([A-Za-z]*)$")
+
+# VirtualTime's base unit is microseconds (see cubesat_testbed.engine). A duration
+# string must spell out its unit so a config author never silently gets a value
+# 1,000,000x smaller than intended; the sole exception is the literal `0`, which
+# is unambiguous in any unit.
+_DURATION_UNIT_MICROSECONDS: dict[str, int] = {
+    "s": 1_000_000,
+    "sec": 1_000_000,
+    "secs": 1_000_000,
+    "second": 1_000_000,
+    "seconds": 1_000_000,
+    "ms": 1_000,
+    "msec": 1_000,
+    "msecs": 1_000,
+    "millisecond": 1_000,
+    "milliseconds": 1_000,
+    "us": 1,
+    "µs": 1,
+    "usec": 1,
+    "usecs": 1,
+    "microsecond": 1,
+    "microseconds": 1,
+}
 
 CspAddress: TypeAlias = Annotated[int, Field(ge=0, le=CSP_V2_ADDRESS_MAX, strict=True)]
 CspPort: TypeAlias = Annotated[int, Field(ge=0, le=CSP_V2_PORT_MAX, strict=True)]
@@ -548,29 +571,49 @@ def _validate_command_reference(
 
 
 def _parse_virtual_duration(value: object) -> int:
+    """Parse a scenario/config duration into microseconds, VirtualTime's base unit.
+
+    A bare integer is only accepted when it is exactly ``0`` (unambiguous in any
+    unit). Any non-zero magnitude must spell out its unit ('s', 'ms', or 'us') so
+    a config author can never silently end up with a value 1,000,000x smaller
+    than intended after this base unit changed from virtual seconds to
+    microseconds.
+    """
+
     if isinstance(value, bool):
         raise ValueError(  # noqa: TRY004
-            "virtual duration must be a non-negative integer or duration string"
+            "virtual duration must be the integer 0 or a duration string with an explicit unit"
         )
     if isinstance(value, int):
         if value < 0:
             raise ValueError("virtual duration must be non-negative")
-        return value
+        if value != 0:
+            raise ValueError(
+                "non-zero virtual durations must spell out an explicit unit, for example "
+                f"'{value}s', '{value}ms', or '{value}us'"
+            )
+        return 0
     if isinstance(value, str):
         stripped = value.strip()
         match = _DURATION_RE.fullmatch(stripped)
         if match is None:
             raise ValueError(
-                "virtual duration strings must look like '3s', '3 ticks' or a non-negative integer"
+                "virtual duration strings must look like '3s', '500ms', '10us', or the bare "
+                "integer 0"
             )
         amount_text, unit = match.groups()
         normalized_unit = unit.lower()
-        if normalized_unit not in {"", "s", "sec", "secs", "second", "seconds", "tick", "ticks"}:
-            raise ValueError(
-                "virtual duration unit must be seconds ('s') or virtual ticks ('ticks')"
-            )
-        return int(amount_text)
-    raise ValueError("virtual duration must be a non-negative integer or duration string")
+        if normalized_unit == "" and amount_text == "0":
+            return 0
+        try:
+            multiplier = _DURATION_UNIT_MICROSECONDS[normalized_unit]
+        except KeyError:
+            supported = ", ".join(sorted(_DURATION_UNIT_MICROSECONDS))
+            raise ValueError(f"virtual duration unit must be one of: {supported}") from None
+        return int(amount_text) * multiplier
+    raise ValueError(
+        "virtual duration must be the integer 0 or a duration string with an explicit unit"
+    )
 
 
 def _parse_cycle_count(value: object) -> int:

@@ -8,6 +8,7 @@ on the DES engine and collects PASS/FAIL results.
 from __future__ import annotations
 
 import sys
+import warnings
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +60,14 @@ from cubesat_testbed.scenario.assertions import (
 from cubesat_testbed.transport import EndpointId, InMemoryBusAdapter, TransportEnvelope
 
 _ModuleT = TypeVar("_ModuleT", bound=SimulatedModule)
+
+_PHYSICAL_STEP_US: VirtualTime = 1_000_000
+"""Fixed cadence, in microseconds, of the runner's tick/telemetry/cycle step.
+
+Product v1 ticks every simulated module, advances the fault-injection cycle
+counter, and emits configured telemetry once per virtual second. This matches
+the cadence product v1 has always used; it is not yet configurable per node.
+"""
 
 
 class ScenarioRunnerError(RuntimeError):
@@ -170,6 +179,7 @@ class ScenarioRunner:
         self._assertion_results: list[AssertionResult] = []
         self._semantic_payloads_by_envelope: dict[int, object] = {}
         self.runtime.engine.add_handler(EventKind.TELEMETRY, self._record_telemetry)
+        self._arm_physical_step()
 
     @property
     def latest_telemetry(self) -> Mapping[str, object]:
@@ -204,7 +214,13 @@ class ScenarioRunner:
         )
 
     def wait(self, virtual_time: VirtualTime) -> None:
-        """Advance virtual time and drive configured in-memory modules."""
+        """Advance virtual time and drive configured in-memory modules.
+
+        The DES engine's own recurring physical-step timer (armed once per
+        runner instance, see ``_arm_physical_step``) ticks modules, advances the
+        fault-injection cycle counter, and emits telemetry as this call jumps
+        the engine forward; this method itself does not loop tick-by-tick.
+        """
 
         delay = _validate_virtual_time("wait virtual_time", virtual_time)
         if delay == 0:
@@ -212,13 +228,15 @@ class ScenarioRunner:
             self._emit_configured_telemetry()
             return
 
-        for _tick in range(delay):
-            target_time = self.runtime.engine.now + 1
-            self.runtime.engine.run_until(target_time, max_events=self._max_settle_events)
-            self._drain_transport_commands()
-            self.runtime.fault_engine.advance_cycles(1, now=self.runtime.engine.now)
-            self._tick_modules(1)
-            self._emit_configured_telemetry()
+        target = self.runtime.engine.now + delay
+        self.runtime.engine.run_until(target, max_events=self._max_settle_events)
+        if self.runtime.engine.now < target:
+            raise ScenarioRuntimeError(
+                f"wait exceeded max_settle_events={self._max_settle_events} before reaching "
+                f"virtual time {target}; pass a larger max_settle_events to ScenarioRunner "
+                "for long waits"
+            )
+        self._drain_transport_commands()
 
     def inject_fault(self, step: InjectFaultStep) -> None:
         """Apply one scenario fault request through the DES fault path."""
@@ -274,7 +292,12 @@ class ScenarioRunner:
             )
             if result.passed or self.runtime.engine.now >= deadline:
                 break
-            self.wait(1)
+            # Jump straight to whichever comes first: the next scheduled event
+            # (e.g. the next physical-step tick) or the assertion's own
+            # deadline, instead of re-evaluating one microsecond at a time.
+            next_event_time = self.runtime.engine.next_event_time
+            next_stop = deadline if next_event_time is None else min(next_event_time, deadline)
+            self.wait(next_stop - self.runtime.engine.now)
 
         self._assertion_results.append(result)
         print(format_assertion_result(result), file=self._output)
@@ -288,6 +311,23 @@ class ScenarioRunner:
         if not isinstance(event.payload, TelemetryPayload):
             raise ScenarioRuntimeError("telemetry events must carry a TelemetryPayload")
         self._latest_telemetry[event.payload.signal] = event.payload.value
+
+    def _arm_physical_step(self) -> None:
+        """Schedule the recurring engine timer that drives ticks/cycles/telemetry.
+
+        This re-arms itself on every fire, so a single ``wait()``/``run_until``
+        call spanning many virtual seconds dispatches it as an ordinary DES
+        event at each due instant instead of the runner looping in Python.
+        """
+
+        def _on_step(_event: SimulationEvent, engine: DiscreteEventEngine) -> None:
+            self._drain_transport_commands()
+            self.runtime.fault_engine.advance_cycles(1, now=engine.now)
+            self._tick_modules(1)
+            self._emit_configured_telemetry()
+            engine.schedule_timer(_PHYSICAL_STEP_US, handler=_on_step)
+
+        self.runtime.engine.schedule_timer(_PHYSICAL_STEP_US, handler=_on_step)
 
     def _tick_modules(self, ticks: int) -> None:
         for node_name in self.runtime.tick_order:
@@ -335,6 +375,8 @@ class ScenarioRunner:
     def _deliver_transport_envelope(self, envelope: TransportEnvelope) -> None:
         packet = decode_frame(envelope.frame)
         route = self._route_for_packet(packet)
+        if route is None:
+            return
         module = self.runtime.module(route.target_node)
         if not isinstance(module, _CommandHandlingModule):
             raise ScenarioRuntimeError(f"module {route.target_node!r} cannot handle commands")
@@ -378,7 +420,16 @@ class ScenarioRunner:
             )
         return candidates[0]
 
-    def _route_for_packet(self, packet: DecodedCspPacket) -> _CommandRoute:
+    def _route_for_packet(self, packet: DecodedCspPacket) -> _CommandRoute | None:
+        """Resolve the configured route for an inbound CSP frame, if any.
+
+        A frame with no configured route is treated as foreign bus traffic, not
+        a scenario error: real CAN buses routinely carry frames the testbed
+        does not own. Such frames are warned about and dropped rather than
+        aborting the run. An ambiguous match (multiple configured routes) is
+        still a configuration bug and remains a hard error.
+        """
+
         fields = packet.fields
         candidates = [
             route
@@ -394,11 +445,14 @@ class ScenarioRunner:
         if not exact_payload and len(candidates) == 1:
             return candidates[0]
         if not candidates:
-            raise ScenarioRuntimeError(
-                "received CSP command frame with no configured route: "
+            warnings.warn(
+                "received CSP frame with no configured route, ignoring it: "
                 f"src={fields.source} dst={fields.destination} "
-                f"dport={fields.destination_port} sport={fields.source_port}"
+                f"dport={fields.destination_port} sport={fields.source_port}",
+                RuntimeWarning,
+                stacklevel=2,
             )
+            return None
         raise ScenarioRuntimeError("received CSP command frame matches multiple configured routes")
 
     def _read_signal(self, signal: str) -> object:
@@ -625,7 +679,7 @@ def _default_obc_rules(setup: TestbedConfig, *, source_node: str) -> tuple[ObcPe
                 30.0,
             ),
             actions=(ObcPeerCommandAction(PAYLOAD_POWER_OFF_COMMAND),),
-            for_duration=3,
+            for_duration=3 * _PHYSICAL_STEP_US,
         ),
     )
 

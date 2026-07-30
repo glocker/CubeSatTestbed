@@ -27,3 +27,19 @@ still pre-release.
 - Scenario runner with deterministic PASS/FAIL assertions.
 - `cubesat-testbed run` CLI with `--json`, `--quiet`, and CI-friendly exit
   codes.
+
+### Changed
+
+- **Breaking:** `VirtualTime`'s base unit changed from virtual seconds to
+  microseconds, enabling sub-second scenario timing. Every non-zero duration
+  (`duration`, `virtual_time`, `timeout`, `for`, `cooldown`) now requires an
+  explicit unit (`s`, `ms`, or `us`); a bare non-zero integer is rejected with
+  a validation error instead of being silently reinterpreted. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#virtual-time-duration-units).
+- The scenario runner no longer drives module ticking, telemetry emission, and
+  fault-cycle advancement through a per-second Python loop inside `wait()`.
+  These now run on a recurring DES engine timer, so `wait()` jumps directly to
+  its target virtual time instead of stepping through it one unit at a time.
+- A received CSP frame with no configured route is now a `RuntimeWarning` and
+  is dropped, not a scenario-ending error — real CAN buses routinely carry
+  frames the testbed does not own.

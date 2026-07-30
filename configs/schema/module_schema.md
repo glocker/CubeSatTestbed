@@ -66,7 +66,10 @@ Scenario parsing is separate from scenario execution. Parsers can optionally
 cross-validate references against a parsed setup config before the runner starts.
 
 Supported assertion operators are `==`, `!=`, `>`, `>=`, `<`, and `<=`. Virtual
-durations accept non-negative integers or strings such as `3s` and `3 ticks`.
+durations (`VirtualTime`'s base unit is microseconds) must spell out an
+explicit unit — `s`/`sec`/`seconds`, `ms`/`millisecond(s)`, or
+`us`/`microsecond(s)` — for example `"3s"` or `"500ms"`. The bare integer `0`
+is the sole exception, since it is unambiguous in any unit.
 
 ## Signal codec v1
 

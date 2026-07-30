@@ -51,8 +51,8 @@ uv run cubesat-testbed run \
 ```
 
 ```text
-PASS t=3 assert_3: payload.telemetry.power_status == 'offline'; actual='offline'
-SUMMARY scenario='EPS Low Battery Protection Test' assertions=1 passed=1 failed=0 started_at=0 finished_at=3
+PASS t=3000000 assert_3: payload.telemetry.power_status == 'offline'; actual='offline'
+SUMMARY scenario='EPS Low Battery Protection Test' assertions=1 passed=1 failed=0 started_at=0 finished_at=3000000
 ```
 
 ## v1 scope at a glance

@@ -114,6 +114,23 @@ steps:
     timeout: "1s"
 ```
 
+### Virtual-time duration units
+
+`VirtualTime`'s base unit is microseconds, so sub-second scenario timing (short
+command timeouts, fast FDIR reaction windows) can be expressed exactly with
+plain integers. Every duration field (`duration`, `virtual_time`, `timeout`,
+`for`, `cooldown`) must spell out an explicit unit — `s`/`sec`/`seconds`,
+`ms`/`millisecond(s)`, or `us`/`microsecond(s)` — except the literal `0`, which
+is unambiguous in any unit and may be given bare. A bare non-zero integer (for
+example `duration: 5`) is rejected with a validation error rather than
+silently reinterpreted, since the base unit changed from virtual seconds to
+microseconds during v1 development.
+
+Simulated modules are ticked, the fault-injection cycle counter is advanced,
+and configured telemetry is emitted once per virtual second (1,000,000 µs) via
+a recurring engine timer; this cadence is fixed in v1, not yet configurable
+per node.
+
 ## Signal codec v1
 
 The v1 binary signal codec is intentionally small: byte offsets only, no
@@ -172,8 +189,8 @@ Short flags (`-c`, `-s`) are also supported. By default, the command prints
 the per-assertion PASS/FAIL report to `stdout`, then a one-line summary:
 
 ```text
-PASS t=3 assert_3: payload.telemetry.power_status == 'offline'; actual='offline'
-SUMMARY scenario='EPS Low Battery Protection Test' assertions=1 passed=1 failed=0 started_at=0 finished_at=3
+PASS t=3000000 assert_3: payload.telemetry.power_status == 'offline'; actual='offline'
+SUMMARY scenario='EPS Low Battery Protection Test' assertions=1 passed=1 failed=0 started_at=0 finished_at=3000000
 ```
 
 `--quiet` suppresses normal `stdout` output while keeping `stderr`

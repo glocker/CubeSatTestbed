@@ -40,11 +40,11 @@ def test_default_setup_and_low_battery_scenario_validate_together() -> None:
     assert scenario.name == "EPS Low Battery Protection Test"
     assert len(scenario.steps) == 3
     assert isinstance(scenario.steps[0], InjectFaultStep)
-    assert scenario.steps[0].duration == 5
+    assert scenario.steps[0].duration == 5_000_000
     assert isinstance(scenario.steps[1], WaitStep)
-    assert scenario.steps[1].virtual_time == 3
+    assert scenario.steps[1].virtual_time == 3_000_000
     assert isinstance(scenario.steps[2], AssertStep)
-    assert scenario.steps[2].timeout == 1
+    assert scenario.steps[2].timeout == 1_000_000
 
 
 def test_setup_rejects_simulated_node_without_module_type() -> None:
@@ -231,7 +231,7 @@ def test_scenario_rejects_named_fault_expiration() -> None:
               - action: inject_fault
                 type: named_fault
                 target: eps.battery_cell_dead
-                duration: 5
+                duration: "5s"
             """
         )
 

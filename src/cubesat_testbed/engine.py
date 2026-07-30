@@ -17,6 +17,14 @@ from typing import TypeAlias
 from cubesat_testbed.transport.base import EndpointId, TransportEnvelope
 
 VirtualTime: TypeAlias = int
+"""Integer virtual-time value in microseconds since the engine's start time.
+
+Microseconds are the base unit so that sub-second scenario timing (command
+timeouts, FDIR reaction windows, etc.) can be expressed exactly with plain
+integers. Config/scenario duration strings (e.g. ``"3s"``, ``"500ms"``) are
+converted to this unit by :mod:`cubesat_testbed.config.parser` before reaching
+the engine.
+"""
 EventHandler: TypeAlias = Callable[["SimulationEvent", "DiscreteEventEngine"], None]
 
 
