@@ -27,3 +27,8 @@ still pre-release.
 - Scenario runner with deterministic PASS/FAIL assertions.
 - `cubesat-testbed run` CLI with `--json`, `--quiet`, and CI-friendly exit
   codes.
+- Per-node `[nodes.<node>.params]` TOML table overriding a simulated module's
+  own tunable parameters (e.g. EPS battery capacity, power-mode thresholds),
+  validated against that module's configuration object. Third-party module
+  types register in `cubesat_testbed.modules.registry.MODULE_PARAM_CONFIGS` to
+  support the same mechanism.

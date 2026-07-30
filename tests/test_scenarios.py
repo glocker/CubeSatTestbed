@@ -3,7 +3,12 @@ from __future__ import annotations
 from io import StringIO
 from pathlib import Path
 
-from cubesat_testbed.config import load_scenario, load_testbed_config, parse_scenario
+from cubesat_testbed.config import (
+    load_scenario,
+    load_testbed_config,
+    parse_scenario,
+    parse_testbed_config,
+)
 from cubesat_testbed.scenario import ScenarioRunner, build_in_memory_runtime, run_scenario
 
 
@@ -94,3 +99,25 @@ def test_assert_step_waits_until_timeout_and_reports_fail_deterministically() ->
     assert output.getvalue().startswith(
         "FAIL t=2 critical_battery: eps.telemetry.battery_percent < 10; actual="
     )
+
+
+def test_module_params_override_flows_into_runtime_module() -> None:
+    setup = parse_testbed_config(
+        """
+        [transport]
+        type = "in-memory"
+
+        [nodes.eps]
+        mode = "simulated"
+        module_type = "generic_eps"
+        address = 2
+
+        [nodes.eps.params]
+        initial_battery_percent = 42.0
+        battery_capacity_wh = 5.0
+        """
+    )
+
+    runtime = build_in_memory_runtime(setup, install_default_obc_rules=False)
+
+    assert runtime.module("eps").telemetry()["battery_percent"] == 42.0

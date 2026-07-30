@@ -19,6 +19,7 @@ src/cubesat_testbed/
   transport/in_memory.py  # CI/local in-memory bus
   transport/socketcan.py  # Linux SocketCAN adapter
   modules/base.py         # Module/FSM contract
+  modules/registry.py     # module_type -> config dataclass extension point
   modules/eps.py          # Generic EPS model
   modules/payload.py      # Simple payload model
   modules/obc_peer.py     # Stateless OBC rule engine
