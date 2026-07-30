@@ -1,0 +1,36 @@
+# Example SocketCAN/HIL setup.
+#
+# Use `interface = "vcan0"` for local/Docker loopback, or switch to a physical
+# Linux CAN interface such as `can0` after bringing it up with the desired bitrate.
+
+[transport]
+type = "socketcan"
+interface = "vcan0"
+receive_own_messages = false
+
+[nodes.obc]
+mode = "simulated"
+module_type = "obc_peer"
+address = 1
+
+[nodes.eps]
+mode = "simulated"
+module_type = "generic_eps"
+address = 2
+
+[nodes.payload]
+mode = "hardware"
+address = 3
+
+[nodes.obc.commands.payload_power_off]
+target = "payload"
+destination_port = 10
+source_port = 10
+payload_hex = "00"
+
+[nodes.eps.telemetry.battery_percent]
+source_port = 20
+destination_port = 20
+units = "percent"
+min = 0
+max = 100

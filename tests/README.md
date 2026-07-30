@@ -16,5 +16,12 @@ Planned coverage:
   flags;
 - scenario runner PASS/FAIL result tests.
 
-SocketCAN/HIL tests are separate because they require Linux CAN support and a
-configured `vcan0` or physical CAN adapter.
+SocketCAN/HIL smoke tests are marked `socketcan` and skipped unless the
+environment explicitly provides a Linux CAN interface:
+
+```sh
+CUBESAT_TESTBED_SOCKETCAN_INTERFACE=vcan0 uv run pytest -m socketcan
+```
+
+Use `vcan0` for local loopback or a physical CAN interface such as `can0` after
+it has been configured by the host.

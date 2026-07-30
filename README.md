@@ -261,6 +261,31 @@ Transport adapters in v1:
 - `SocketCanAdapter` — Linux HIL/Docker path through `python-can` and `vcan0` or
   a physical CAN interface.
 
+For HIL, set the setup transport to SocketCAN:
+
+```toml
+[transport]
+type = "socketcan"
+interface = "vcan0" # or a physical interface such as "can0"
+receive_own_messages = false
+```
+
+The configured adapter can be built through `cubesat_testbed.transport.build_transport_adapter`.
+For local loopback on Linux, bring up `vcan0` first, for example:
+
+```sh
+sudo modprobe vcan
+sudo ip link add dev vcan0 type vcan
+sudo ip link set up vcan0
+```
+
+SocketCAN/HIL smoke tests are outside normal CI and run only when explicitly
+provided an interface:
+
+```sh
+CUBESAT_TESTBED_SOCKETCAN_INTERFACE=vcan0 uv run pytest -m socketcan
+```
+
 Hardware traffic record/replay is out of v1 scope.
 
 ## Development workflow

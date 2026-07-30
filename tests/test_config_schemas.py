@@ -13,6 +13,7 @@ from cubesat_testbed.config import (
     ScenarioParseError,
     ScenarioReferenceError,
     SendCommandStep,
+    SocketCanTransportConfig,
     WaitStep,
     load_scenario,
     load_testbed_config,
@@ -92,6 +93,14 @@ def test_setup_rejects_hardware_node_on_in_memory_transport() -> None:
             address = 2
             """
         )
+
+
+def test_setup_accepts_socketcan_hil_transport_for_hardware_node() -> None:
+    setup = load_testbed_config(Path("configs/examples/socketcan_hil.toml"))
+
+    assert isinstance(setup.transport, SocketCanTransportConfig)
+    assert setup.transport.interface == "vcan0"
+    assert setup.nodes["payload"].mode is NodeMode.HARDWARE
 
 
 def test_setup_rejects_unknown_command_target() -> None:

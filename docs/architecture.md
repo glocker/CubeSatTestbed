@@ -15,6 +15,7 @@ src/cubesat_testbed/
   dut/manager.py          # Node mode orchestration
   protocol/csp_v2.py      # libcsp-compatible CSP v2 codec
   transport/base.py       # Bus adapter interface
+  transport/factory.py    # Config-to-adapter construction
   transport/in_memory.py  # CI/local in-memory bus
   transport/socketcan.py  # Linux SocketCAN adapter
   modules/base.py         # Module/FSM contract
