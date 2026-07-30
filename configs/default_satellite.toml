@@ -15,3 +15,20 @@ address = 2
 mode = "simulated"
 module_type = "simple_payload"
 address = 3
+
+[nodes.obc.commands.payload_power_off]
+target = "payload"
+destination_port = 10
+source_port = 10
+payload_hex = "00"
+
+[nodes.eps.telemetry.battery_percent]
+source_port = 20
+destination_port = 20
+units = "percent"
+min = 0
+max = 100
+
+[nodes.payload.telemetry.power_status]
+source_port = 21
+destination_port = 21
