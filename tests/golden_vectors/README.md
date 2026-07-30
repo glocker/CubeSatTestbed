@@ -9,34 +9,54 @@ baseline.
 
 ## Generation workflow
 
-The intended container workflow uses `vcan0` consistently:
+The container workflow uses `vcan0` consistently.
 
-1. Build the environment:
+1. Build and start the vector environment:
 
    ```sh
-   docker-compose up --build
+   docker compose up --build -d
    ```
 
-2. The build produces the helper binary inside the container:
+   The Compose service builds official libcsp from `https://github.com/libcsp/libcsp.git`,
+   checks that tag `v2.1` resolves to short commit `48f7fb0`, installs Linux CAN
+   tooling including `can-utils`, prepares `vcan0`, and copies the generated helper
+   binary to the mounted repository. If your host uses Compose v1, replace
+   `docker compose` with `docker-compose`. The helper path is:
 
    ```text
    /app/tests/golden_vectors/bin/csp_client
    ```
 
-3. Start a CAN capture inside the container:
+   `bin/csp_client` is a generated build artifact and is intentionally ignored by
+   git.
+
+2. Start a shell in the running vector container:
 
    ```sh
-   candump vcan0 > /app/tests/golden_vectors/ping.txt &
+   docker compose exec libcsp-vectors sh
    ```
 
-4. Send the reference CSP packet with the C helper:
+3. Start CAN capture inside the container:
+
+   ```sh
+   candump -n 1 vcan0 > /app/tests/golden_vectors/ping.txt &
+   ```
+
+4. Send the reference CSP packet with the repository-owned C helper:
 
    ```sh
    /app/tests/golden_vectors/bin/csp_client -c vcan0 -p -d 2
    ```
 
-5. Stop capture and commit the resulting fixture files under
-   `tests/golden_vectors/`.
+5. `candump -n 1` exits after the first received frame. Commit the resulting
+   fixture files under `tests/golden_vectors/`.
+
+   If the dump file is root-owned because it was written through the Docker bind
+   mount, fix ownership from inside the container before committing:
+
+   ```sh
+   chown --reference=/app/pyproject.toml /app/tests/golden_vectors/ping.txt
+   ```
 6. Commit a sibling metadata file next to each dump, for example
    `ping.meta.toml` for `ping.txt`.
 
@@ -51,8 +71,9 @@ libcsp_repo = "https://github.com/libcsp/libcsp"
 libcsp_tag = "v2.1"
 libcsp_commit = "48f7fb0"
 command = "/app/tests/golden_vectors/bin/csp_client -c vcan0 -p -d 2"
+capture_command = "candump -n 1 vcan0 > /app/tests/golden_vectors/ping.txt"
 interface = "vcan0"
-meaning = "CSP ping request to node 2"
+meaning = "Single-frame CSP v2 ping request from node 1 to node 2"
 ```
 
 Committed fixture pairs must record:
@@ -67,6 +88,3 @@ Committed fixture pairs must record:
 
 Python implementation starts after these fixtures are fixed. The Python CSP v2
 codec must match the committed vectors byte-for-byte.
-
-`bin/csp_client` is a generated build artifact; the binary itself is not the
-fixture contract.

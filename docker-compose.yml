@@ -1,10 +1,19 @@
-# Planned services (not implemented yet):
-#
-# framework      - builds from the root Dockerfile, mounts configs/, exposes the
-#                  API port, attaches to the vcan interface
-# vcan-setup     - one-shot container/script that creates and brings up vcan0
-#                  before the framework starts
-# libcsp-vectors - planned build step that pins official libcsp v2.1 commit
-#                  48f7fb0 and builds tests/golden_vectors/bin/csp_client for
-#                  fixture generation
-# openmct        - optional, only added if bridges/openmct is implemented
+services:
+  libcsp-vectors:
+    build:
+      context: .
+      args:
+        LIBCSP_REPO: https://github.com/libcsp/libcsp.git
+        LIBCSP_TAG: v2.1
+        LIBCSP_COMMIT: 48f7fb0
+    image: cubesat-testbed-libcsp-vectors:libcsp-v2.1
+    working_dir: /app
+    # Required to create and bring up vcan0 inside the container network namespace.
+    privileged: true
+    volumes:
+      # Captures and the generated helper must land in the working tree, not only
+      # inside the container filesystem.
+      - .:/app
+    environment:
+      CAN_INTERFACE: vcan0
+    command: ["sleep", "infinity"]

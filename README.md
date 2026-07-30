@@ -83,13 +83,21 @@ created inside this repository from the official libcsp `v2.1` release at commit
 
 The intended workflow uses `vcan0` consistently:
 
-1. `docker-compose up --build` builds the libcsp-based helper utility.
-2. The generated C binary appears at `tests/golden_vectors/bin/csp_client` inside
-   the container.
+1. `docker compose up --build -d` builds the libcsp-based helper utility,
+   installs Linux CAN tooling including `can-utils`, prepares `vcan0`, and copies
+   the generated helper to `tests/golden_vectors/bin/csp_client` inside the
+   mounted repository. If your host uses Compose v1, the equivalent command is
+   `docker-compose up --build -d`.
+2. Start a shell in the running vector container:
+
+   ```sh
+   docker compose exec libcsp-vectors sh
+   ```
+
 3. Start CAN capture inside the container:
 
    ```sh
-   candump vcan0 > /app/tests/golden_vectors/ping.txt &
+   candump -n 1 vcan0 > /app/tests/golden_vectors/ping.txt &
    ```
 
 4. Send a reference packet with the C helper:
