@@ -229,6 +229,47 @@ steps:
 Pydantic validates both setup config and scenario DSL. Python `tomllib` is used
 for TOML parsing.
 
+### Running scenarios from CLI
+
+v1 CLI runs deterministic in-memory scenarios without requiring a custom
+Python wrapper script:
+
+```sh
+uv run cubesat-testbed run \
+  --config configs/default_satellite.toml \
+  --scenario configs/scenarios/low_battery.yaml
+```
+
+Short flags are also supported:
+
+```sh
+uv run cubesat-testbed run -c configs/default_satellite.toml -s configs/scenarios/low_battery.yaml
+```
+
+The command prints the existing per-assertion PASS/FAIL report to `stdout`, then
+a one-line summary:
+
+```text
+PASS t=3 assert_3: payload.telemetry.power_status == 'offline'; actual='offline'
+SUMMARY scenario='EPS Low Battery Protection Test' assertions=1 passed=1 failed=0 started_at=0 finished_at=3
+```
+
+Exit codes are intended for CI/CD use:
+
+| Exit code | Meaning |
+| ---: | --- |
+| `0` | Scenario executed and all assertions passed. |
+| `1` | Scenario executed, but one or more assertions failed. |
+| `2` | Setup/scenario loading, validation or runtime execution error. Missing files also return `2` with a concise `stderr` error instead of a traceback. |
+
+If a scenario contains zero assertions, the CLI prints
+`warning: 0 assertions in scenario` to `stderr` so a vacuously passing run is
+visible in logs.
+
+The v1 CLI intentionally targets the in-memory runtime. Planned later CLI work
+includes `--json`, `--quiet`, and explicit interrupt/exit-code handling for
+long-running HIL flows.
+
 ### Signal codec v1
 
 The v1 binary signal codec is intentionally small:

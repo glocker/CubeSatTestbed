@@ -12,6 +12,9 @@ dependencies = [
     "uvicorn>=0.30",
 ]
 
+[project.scripts]
+cubesat-testbed = "cubesat_testbed.main:main"
+
 [project.optional-dependencies]
 dev = [
     "mypy>=1.11",
