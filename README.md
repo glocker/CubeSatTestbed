@@ -246,13 +246,19 @@ Short flags are also supported:
 uv run cubesat-testbed run -c configs/default_satellite.toml -s configs/scenarios/low_battery.yaml
 ```
 
-The command prints the existing per-assertion PASS/FAIL report to `stdout`, then
-a one-line summary:
+By default, the command prints the existing per-assertion PASS/FAIL report to
+`stdout`, then a one-line summary:
 
 ```text
 PASS t=3 assert_3: payload.telemetry.power_status == 'offline'; actual='offline'
 SUMMARY scenario='EPS Low Battery Protection Test' assertions=1 passed=1 failed=0 started_at=0 finished_at=3
 ```
+
+Use `--quiet` to suppress normal `stdout` output while keeping `stderr` warnings
+and errors visible. Use `--json` to emit one machine-readable JSON object to
+`stdout` instead of the human-readable report; `--json` takes precedence if both
+`--json` and `--quiet` are supplied. Execution errors and interrupts are also
+reported as JSON in `--json` mode.
 
 Exit codes are intended for CI/CD use:
 
@@ -260,15 +266,15 @@ Exit codes are intended for CI/CD use:
 | ---: | --- |
 | `0` | Scenario executed and all assertions passed. |
 | `1` | Scenario executed, but one or more assertions failed. |
-| `2` | Setup/scenario loading, validation or runtime execution error. Missing files also return `2` with a concise `stderr` error instead of a traceback. |
+| `2` | Setup/scenario loading, validation or runtime execution error. Missing files also return `2` with a concise error instead of a traceback. |
+| `130` | Run was interrupted, for example by `Ctrl-C` / `KeyboardInterrupt`, without printing a traceback. |
 
 If a scenario contains zero assertions, the CLI prints
 `warning: 0 assertions in scenario` to `stderr` so a vacuously passing run is
 visible in logs.
 
-The v1 CLI intentionally targets the in-memory runtime. Planned later CLI work
-includes `--json`, `--quiet`, and explicit interrupt/exit-code handling for
-long-running HIL flows.
+v1 CLI intentionally targets the in-memory runtime; long-running HIL flows
+remain future work.
 
 ### Signal codec v1
 
