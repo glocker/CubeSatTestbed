@@ -29,6 +29,7 @@ _SCHEMA_MODEL_CONFIG = ConfigDict(extra="forbid", str_strip_whitespace=True)
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _PATH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$")
 _DURATION_RE = re.compile(r"^([0-9]+)\s*([A-Za-z]*)$")
+_CYCLE_RE = re.compile(r"^([0-9]+)\s*([A-Za-z]*)$")
 
 CspAddress: TypeAlias = Annotated[int, Field(ge=0, le=CSP_V2_ADDRESS_MAX, strict=True)]
 CspPort: TypeAlias = Annotated[int, Field(ge=0, le=CSP_V2_PORT_MAX, strict=True)]
@@ -37,6 +38,11 @@ CspFlags: TypeAlias = Annotated[int, Field(ge=0, le=CSP_V2_FLAGS_MAX, strict=Tru
 VirtualDuration: TypeAlias = Annotated[
     int,
     BeforeValidator(lambda value: _parse_virtual_duration(value)),
+    Field(ge=0, strict=True),
+]
+VirtualCycleCount: TypeAlias = Annotated[
+    int,
+    BeforeValidator(lambda value: _parse_cycle_count(value)),
     Field(ge=0, strict=True),
 ]
 
@@ -322,6 +328,7 @@ class InjectFaultStep(BaseModel):
     target: str
     value: object = None
     duration: VirtualDuration | None = None
+    cycles: VirtualCycleCount | None = None
 
     @field_validator("target")
     @classmethod
@@ -334,12 +341,13 @@ class InjectFaultStep(BaseModel):
             raise ValueError("state_override targets must include '.model.'")
         if self.type is FaultType.SIGNAL_OVERRIDE and ".telemetry." not in self.target:
             raise ValueError("signal_override targets must include '.telemetry.'")
-        if self.type is FaultType.NAMED_FAULT and any(
-            marker in self.target for marker in (".model.", ".telemetry.")
-        ):
-            raise ValueError(
-                "named_fault targets must name a module fault flag, not model/telemetry"
-            )
+        if self.type is FaultType.NAMED_FAULT:
+            if any(marker in self.target for marker in (".model.", ".telemetry.")):
+                raise ValueError(
+                    "named_fault targets must name a module fault flag, not model/telemetry"
+                )
+            if self.duration is not None or self.cycles is not None:
+                raise ValueError("named_fault requests do not support duration or cycles")
         return self
 
 
@@ -565,6 +573,30 @@ def _parse_virtual_duration(value: object) -> int:
     raise ValueError("virtual duration must be a non-negative integer or duration string")
 
 
+def _parse_cycle_count(value: object) -> int:
+    if isinstance(value, bool):
+        raise ValueError(  # noqa: TRY004
+            "cycle count must be a non-negative integer or cycle string"
+        )
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError("cycle count must be non-negative")
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        match = _CYCLE_RE.fullmatch(stripped)
+        if match is None:
+            raise ValueError(
+                "cycle count strings must look like '3 cycles' or a non-negative integer"
+            )
+        amount_text, unit = match.groups()
+        normalized_unit = unit.lower()
+        if normalized_unit not in {"", "cycle", "cycles"}:
+            raise ValueError("cycle count unit must be 'cycle' or 'cycles'")
+        return int(amount_text)
+    raise ValueError("cycle count must be a non-negative integer or cycle string")
+
+
 def _coerce_hex_bytes(value: object) -> bytes:
     if value is None:
         return b""
@@ -633,6 +665,7 @@ __all__ = [
     "TelemetryMapping",
     "TestbedConfig",
     "TransportConfig",
+    "VirtualCycleCount",
     "VirtualDuration",
     "WaitStep",
     "load_scenario",

@@ -91,6 +91,7 @@ class FaultPayload:
     target: str
     value: object = None
     duration: VirtualTime | None = None
+    cycles: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -102,6 +103,12 @@ class FaultPayload:
                 self,
                 "duration",
                 _validate_virtual_time("fault duration", self.duration),
+            )
+        if self.cycles is not None:
+            object.__setattr__(
+                self,
+                "cycles",
+                _validate_virtual_time("fault cycles", self.cycles),
             )
 
 
@@ -325,6 +332,7 @@ class DiscreteEventEngine:
         delay: VirtualTime = 0,
         value: object = None,
         duration: VirtualTime | None = None,
+        cycles: int | None = None,
         handler: EventHandler | None = None,
     ) -> SimulationEvent:
         """Schedule a passive fault-injection request event."""
@@ -332,7 +340,13 @@ class DiscreteEventEngine:
         return self.schedule_after(
             delay,
             EventKind.FAULT,
-            FaultPayload(fault_type=fault_type, target=target, value=value, duration=duration),
+            FaultPayload(
+                fault_type=fault_type,
+                target=target,
+                value=value,
+                duration=duration,
+                cycles=cycles,
+            ),
             handler=handler,
         )
 

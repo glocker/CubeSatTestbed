@@ -192,6 +192,41 @@ def test_scenario_rejects_invalid_fault_target_combination() -> None:
         )
 
 
+def test_scenario_parses_fault_cycle_expiration() -> None:
+    scenario = parse_scenario(
+        """
+        name: Cycle-expiring telemetry spoof
+        steps:
+          - action: inject_fault
+            type: signal_override
+            target: eps.telemetry.voltage_mv
+            value: 4500
+            cycles: "2 cycles"
+        """
+    )
+
+    step = scenario.steps[0]
+    assert isinstance(step, InjectFaultStep)
+    assert step.duration is None
+    assert step.cycles == 2
+
+
+def test_scenario_rejects_named_fault_expiration() -> None:
+    with pytest.raises(
+        ValidationError, match="named_fault requests do not support duration or cycles"
+    ):
+        parse_scenario(
+            """
+            name: Invalid named fault expiration
+            steps:
+              - action: inject_fault
+                type: named_fault
+                target: eps.battery_cell_dead
+                duration: 5
+            """
+        )
+
+
 def test_scenario_reference_validation_rejects_unknown_command() -> None:
     setup = load_testbed_config(Path("configs/default_satellite.toml"))
 
