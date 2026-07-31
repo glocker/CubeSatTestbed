@@ -1,0 +1,36 @@
+# Example setup overriding a built-in module's tunable parameters.
+#
+# No single "generic EPS" model can faithfully match a real board's battery
+# pack and thresholds. `[nodes.<node>.params]` overrides the target module's
+# own configuration fields instead of requiring a Python subclass; an unknown
+# name or an out-of-range value fails setup validation the same way a Python
+# caller constructing that module directly would fail.
+
+[transport]
+type = "in-memory"
+
+[nodes.eps]
+mode = "simulated"
+module_type = "generic_eps"
+address = 2
+
+[nodes.eps.params]
+battery_capacity_wh = 40.0
+initial_battery_percent = 90.0
+low_power_threshold_percent = 25.0
+recovery_threshold_percent = 30.0
+
+[nodes.payload]
+mode = "simulated"
+module_type = "simple_payload"
+address = 3
+
+[nodes.eps.telemetry.battery_percent]
+source_port = 20
+destination_port = 20
+units = "percent"
+min = 0
+max = 100
+offset = 0
+length = 4
+type = "float"

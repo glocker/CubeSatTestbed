@@ -34,6 +34,11 @@ still pre-release.
   per assertion, `<failure>`/`<error>` elements as appropriate) so CI systems
   render PASS/FAIL natively without a custom parser. Execution errors and
   interrupts still produce a report instead of leaving no file.
+- Per-node `[nodes.<node>.params]` TOML table overriding a simulated module's
+  own tunable parameters (e.g. EPS battery capacity, power-mode thresholds),
+  validated against that module's configuration object. Third-party module
+  types register in `cubesat_testbed.modules.registry.MODULE_PARAM_CONFIGS` to
+  support the same mechanism.
 
 ### Changed
 

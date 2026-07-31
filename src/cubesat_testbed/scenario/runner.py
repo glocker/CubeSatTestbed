@@ -12,7 +12,7 @@ import warnings
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, TextIO, TypeVar, runtime_checkable
+from typing import Any, Protocol, TextIO, TypeVar, cast, runtime_checkable
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from cubesat_testbed.clock import Clock, VirtualClock
@@ -777,16 +777,21 @@ def build_runtime(
 
     for node_name, node in setup.nodes.items():
         if participants[node_name].is_simulated and node.module_type is ModuleType.SIMPLE_PAYLOAD:
+            # node.params is validated by NodeConfig against this exact dataclass
+            # already (config/parser.py); the cast only tells mypy what runtime
+            # validation already guarantees.
+            params = cast("dict[str, Any]", node.params)
             modules[node_name] = SimplePayloadModule(
-                SimplePayloadConfig(name=node_name, endpoint=node.address),
+                SimplePayloadConfig(name=node_name, endpoint=node.address, **params),
                 fault_engine=fault_engine,
             )
 
     first_payload = _first_module_of_type(modules, SimplePayloadModule)
     for node_name, node in setup.nodes.items():
         if participants[node_name].is_simulated and node.module_type is ModuleType.GENERIC_EPS:
+            params = cast("dict[str, Any]", node.params)
             modules[node_name] = GenericEpsModule(
-                GenericEpsConfig(name=node_name, endpoint=node.address),
+                GenericEpsConfig(name=node_name, endpoint=node.address, **params),
                 payload=first_payload,
                 fault_engine=fault_engine,
             )

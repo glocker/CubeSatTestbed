@@ -309,3 +309,25 @@ def test_setup_without_inline_rules_installs_no_obc_rules() -> None:
     runtime = build_in_memory_runtime(setup)
 
     assert runtime.module("obc").config.rules == ()
+
+
+def test_module_params_override_flows_into_runtime_module() -> None:
+    setup = parse_testbed_config(
+        """
+        [transport]
+        type = "in-memory"
+
+        [nodes.eps]
+        mode = "simulated"
+        module_type = "generic_eps"
+        address = 2
+
+        [nodes.eps.params]
+        initial_battery_percent = 42.0
+        battery_capacity_wh = 5.0
+        """
+    )
+
+    runtime = build_in_memory_runtime(setup)
+
+    assert runtime.module("eps").telemetry()["battery_percent"] == 42.0

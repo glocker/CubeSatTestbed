@@ -42,6 +42,15 @@ v1 ships three simulated modules:
 Stretch / later: **Thermal** (simple RC-style model), **ADCS** (attitude
 dynamics are intentionally out of v1 scope).
 
+Each built-in module's tunable physical parameters (battery capacity,
+power-mode thresholds, and so on) are overridable per node through an optional
+`[nodes.<node>.params]` TOML table, validated against that module's own
+configuration object — see
+[`configs/schema/module_schema.md`](../configs/schema/module_schema.md#module-parameters).
+Third-party module types register in
+`cubesat_testbed.modules.registry.MODULE_PARAM_CONFIGS` to support the same
+mechanism.
+
 ## Fault injection
 
 Fault handling is split into two responsibilities.

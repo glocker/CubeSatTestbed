@@ -53,6 +53,7 @@ from cubesat_testbed.modules.payload import (
     SimplePayloadModule,
     SimplePayloadState,
 )
+from cubesat_testbed.modules.registry import MODULE_PARAM_CONFIGS
 
 __all__ = [
     "EPS_BATTERY_CELL_DEAD_FAULT",
@@ -67,6 +68,7 @@ __all__ = [
     "EPS_POWER_OFF_COMMAND",
     "EPS_SET_POWER_MODE_COMMAND",
     "EPS_SOLAR_ARRAY_OFFLINE_FAULT",
+    "MODULE_PARAM_CONFIGS",
     "PAYLOAD_CAPTURE_ONCE_COMMAND",
     "PAYLOAD_CLEAR_DATA_COMMAND",
     "PAYLOAD_DOWNLINK_DATA_COMMAND",

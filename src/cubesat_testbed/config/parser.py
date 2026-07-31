@@ -32,6 +32,9 @@ from cubesat_testbed.protocol.csp_v2 import (
     CSP_V2_SINGLE_FRAME_MAX_PAYLOAD_BYTES,
 )
 
+_RESERVED_PARAM_NAMES = frozenset({"name", "endpoint"})
+"""params keys module config dataclasses always receive from the node itself."""
+
 _SCHEMA_MODEL_CONFIG = ConfigDict(extra="forbid", str_strip_whitespace=True, populate_by_name=True)
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
@@ -361,6 +364,7 @@ class NodeConfig(BaseModel):
     commands: dict[str, CommandMapping] = Field(default_factory=dict)
     telemetry: dict[str, TelemetryMapping] = Field(default_factory=dict)
     rules: dict[str, ObcRule] = Field(default_factory=dict)
+    params: dict[str, object] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_mode_module_combination(self) -> Self:
@@ -370,7 +374,47 @@ class NodeConfig(BaseModel):
             raise ValueError("module_type is only valid for simulated nodes")
         if self.rules and self.module_type is not ModuleType.OBC_PEER:
             raise ValueError("rules is only valid for module_type = 'obc_peer'")
+        if self.mode is not NodeMode.SIMULATED and self.params:
+            raise ValueError("params is only valid for simulated nodes")
+        if self.params:
+            self._validate_params()
         return self
+
+    def _validate_params(self) -> None:
+        # Imported lazily: cubesat_testbed.modules transitively imports this
+        # module (cubesat_testbed.engine -> cubesat_testbed.transport ->
+        # transport.factory -> cubesat_testbed.config) so a top-level import
+        # here would be circular at package-load time. By the time any config
+        # is actually parsed, the whole package has already loaded.
+        from cubesat_testbed.modules.registry import MODULE_PARAM_CONFIGS
+
+        # Guaranteed non-None: params is non-empty only when mode is
+        # SIMULATED, and SIMULATED requires module_type (checked above).
+        assert self.module_type is not None
+        try:
+            config_cls = MODULE_PARAM_CONFIGS[self.module_type.value]
+        except KeyError:
+            raise ValueError(
+                f"module_type {self.module_type.value!r} does not accept params"
+            ) from None
+
+        reserved = _RESERVED_PARAM_NAMES & self.params.keys()
+        if reserved:
+            raise ValueError(
+                f"params must not set {', '.join(sorted(reserved))}; these are "
+                "derived from the node's own name and address"
+            )
+
+        # Reuse the target module's own dataclass validation instead of
+        # duplicating its range/type checks here: attempt to build it with a
+        # placeholder name and surface whatever it rejects. The instance
+        # built here is discarded; the runtime builds its own from node.params.
+        try:
+            config_cls(name="params-check", **self.params)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"invalid params for module_type {self.module_type.value!r}: {exc}"
+            ) from exc
 
 
 class TestbedConfig(BaseModel):

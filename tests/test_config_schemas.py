@@ -81,6 +81,120 @@ def test_setup_rejects_duplicate_csp_addresses() -> None:
         )
 
 
+def test_setup_accepts_valid_module_params_override() -> None:
+    setup = parse_testbed_config(
+        """
+        [transport]
+        type = "in-memory"
+
+        [nodes.eps]
+        mode = "simulated"
+        module_type = "generic_eps"
+        address = 2
+
+        [nodes.eps.params]
+        battery_capacity_wh = 40.0
+        low_power_threshold_percent = 25.0
+        """
+    )
+
+    assert setup.nodes["eps"].params == {
+        "battery_capacity_wh": 40.0,
+        "low_power_threshold_percent": 25.0,
+    }
+
+
+def test_setup_rejects_unknown_module_param_name() -> None:
+    with pytest.raises(ValidationError, match="invalid params for module_type 'generic_eps'"):
+        parse_testbed_config(
+            """
+            [transport]
+            type = "in-memory"
+
+            [nodes.eps]
+            mode = "simulated"
+            module_type = "generic_eps"
+            address = 2
+
+            [nodes.eps.params]
+            battery_capacity_kwh = 40.0
+            """
+        )
+
+
+def test_setup_rejects_out_of_range_module_param_value() -> None:
+    with pytest.raises(ValidationError, match="invalid params for module_type 'generic_eps'"):
+        parse_testbed_config(
+            """
+            [transport]
+            type = "in-memory"
+
+            [nodes.eps]
+            mode = "simulated"
+            module_type = "generic_eps"
+            address = 2
+
+            [nodes.eps.params]
+            initial_battery_percent = 150.0
+            """
+        )
+
+
+def test_setup_rejects_params_for_module_type_without_params_support() -> None:
+    with pytest.raises(ValidationError, match="module_type 'obc_peer' does not accept params"):
+        parse_testbed_config(
+            """
+            [transport]
+            type = "in-memory"
+
+            [nodes.obc]
+            mode = "simulated"
+            module_type = "obc_peer"
+            address = 1
+
+            [nodes.obc.params]
+            anything = 1
+            """
+        )
+
+
+def test_setup_rejects_reserved_param_names() -> None:
+    with pytest.raises(ValidationError, match="params must not set endpoint, name"):
+        parse_testbed_config(
+            """
+            [transport]
+            type = "in-memory"
+
+            [nodes.eps]
+            mode = "simulated"
+            module_type = "generic_eps"
+            address = 2
+
+            [nodes.eps.params]
+            name = "not-allowed"
+            endpoint = 9
+            """
+        )
+
+
+def test_setup_rejects_params_for_non_simulated_node() -> None:
+    with pytest.raises(ValidationError, match="params is only valid for simulated nodes"):
+        parse_testbed_config(
+            """
+            [transport]
+            type = "socketcan"
+            interface = "vcan0"
+
+            [nodes.eps]
+            mode = "hardware"
+            address = 2
+
+            [nodes.eps.params]
+            anything = 1
+            """
+        )
+
+
 def test_setup_rejects_hardware_node_on_in_memory_transport() -> None:
     with pytest.raises(ValidationError, match="hardware nodes require transport.type='socketcan'"):
         parse_testbed_config(
@@ -101,6 +215,17 @@ def test_setup_accepts_socketcan_hil_transport_for_hardware_node() -> None:
     assert isinstance(setup.transport, SocketCanTransportConfig)
     assert setup.transport.interface == "vcan0"
     assert setup.nodes["payload"].mode is NodeMode.HARDWARE
+
+
+def test_example_module_params_config_loads_and_overrides_eps_defaults() -> None:
+    setup = load_testbed_config(Path("configs/examples/module_params.toml"))
+
+    assert setup.nodes["eps"].params == {
+        "battery_capacity_wh": 40.0,
+        "initial_battery_percent": 90.0,
+        "low_power_threshold_percent": 25.0,
+        "recovery_threshold_percent": 30.0,
+    }
 
 
 def test_setup_rejects_unknown_command_target() -> None:
