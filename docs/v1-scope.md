@@ -310,6 +310,15 @@ warnings/errors visible. `--json` emits one machine-readable JSON object to
 `stdout` instead; it takes precedence over `--quiet` if both are supplied.
 Execution errors and interrupts are also reported as JSON in `--json` mode.
 
+`--junit-xml PATH` writes a JUnit XML report to `PATH`, one `<testcase>` per
+assertion with a `<failure>` element for each failed assertion, so CI systems
+(GitHub Actions, GitLab CI, Jenkins, ...) can render pass/fail natively
+without a custom parser. It composes with `--json`/`--quiet`, since it writes
+a file rather than controlling `stdout`. Execution errors and interrupts still
+produce a report — one `<testcase>` with an `<error>` element — so a CI step
+that expects the file to exist does not additionally fail on a missing file.
+`time` attributes are real wall-clock seconds the run took, not virtual time.
+
 Exit codes are intended for CI/CD use:
 
 | Exit code | Meaning |

@@ -61,7 +61,7 @@ SUMMARY scenario='EPS Low Battery Protection Test' assertions=1 passed=1 failed=
 - Modules: Generic EPS, OBC Peer (rule engine), Simple Payload.
 - Transports: in-memory (CI/tests) and SocketCAN (Linux HIL).
 - Deterministic virtual-time engine, TOML setup + YAML scenarios, PASS/FAIL
-  CLI report with CI-friendly exit codes.
+  CLI report with CI-friendly exit codes and JUnit XML output.
 
 Full detail, constraints, and what's deliberately out of scope for v1:
 [`docs/v1-scope.md`](docs/v1-scope.md).
