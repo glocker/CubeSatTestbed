@@ -1,0 +1,15 @@
+name = "high_address"
+capture = "high_address.txt"
+libcsp_repo = "https://github.com/libcsp/libcsp"
+libcsp_tag = "v2.1"
+libcsp_commit = "48f7fb0"
+command = "/app/tests/golden_vectors/bin/csp_client -c vcan0 -p -a 65 -d 66"
+capture_command = "candump -n 1 vcan0 > /app/tests/golden_vectors/high_address.txt"
+interface = "vcan0"
+meaning = "Single-frame CSP v2 ping-port request from node 65 to node 66. The CSP v2 CAN ID's 'sender' field is only 6 bits wide (libcsp uses the low 6 bits of the outgoing interface address), so at source=65 it diverges from the full 14-bit CSP source address (sender = 65 & 0x3F = 1, not 65): the only committed vector where these two fields are not numerically identical, since every other vector uses source/destination addresses below 64."
+protocol = "CSP v2 over classic CAN 2.0B extended frame"
+source_address = 65
+destination_address = 66
+expected_sender = 1
+expected_extended_can_id = "0x10084083"
+expected_payload_hex = "01 04 14 80 55"

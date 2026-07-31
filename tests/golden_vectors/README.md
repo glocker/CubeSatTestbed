@@ -48,6 +48,25 @@ The container workflow uses `vcan0` consistently.
    /app/tests/golden_vectors/bin/csp_client -c vcan0 -p -d 2
    ```
 
+   The helper's full option set (`-p -h` for usage) covers the committed
+   vector matrix:
+
+   ```text
+   -a <source-address>       CSP source/interface address (default: 1)
+   -d <destination-address>  CSP destination address (default: 2)
+   -r <priority>             CSP priority 0-3: 0=critical 1=high 2=norm 3=low
+   -l <payload-length>       payload bytes, 0-4; incrementing pattern from 0x55
+   -o <flag[,flag...]>       comma-separated CSP options: crc32, rdp, hmac
+   ```
+
+   `-o rdp` cannot be captured this way: RDP is a stateful, connection-oriented
+   protocol that blocks on a SYN handshake with no peer on the bus to answer
+   it. The RDP flag bit is covered by a synthetic pack/decode round trip in
+   `tests/test_csp_v2.py` instead of a captured vector. `crc32`/`hmac` append
+   their own trailer to the payload, so use `-l 0` with them to stay within
+   the v1 single-frame payload limit (a 1-byte payload plus a 4-byte trailer
+   would push libcsp into multi-frame transmission, which is out of v1 scope).
+
 5. `candump -n 1` exits after the first received frame. Commit the resulting
    fixture files under `tests/golden_vectors/`.
 
@@ -59,6 +78,40 @@ The container workflow uses `vcan0` consistently.
    ```
 6. Commit a sibling metadata file next to each dump, for example
    `ping.meta.toml` for `ping.txt`.
+
+To regenerate every committed vector at once (for example, to check for
+upstream libcsp drift before merging a codec change), run the same script CI
+uses instead of repeating steps 3-5 by hand:
+
+```sh
+docker compose exec -T libcsp-vectors /app/tests/golden_vectors/scripts/regenerate-vectors.sh
+```
+
+Then inspect `git diff -- tests/golden_vectors/*.txt`. An empty diff means
+libcsp's on-wire behavior still matches every committed fixture.
+
+## Committed vector matrix
+
+| Vector | Covers |
+| --- | --- |
+| `ping_node_2` (`ping.txt`) | Baseline: `src=1 dst=2 prio=NORM flags=none payload=1B` |
+| `priority_critical` | `prio=0` (CRITICAL), the low end of the 2-bit priority field |
+| `priority_low` | `prio=3` (LOW), the high end of the 2-bit priority field |
+| `high_address` | `src=65 dst=66`: the CAN-ID `sender` field is only 6 bits (libcsp uses `interface_address & 0x3F`), so this is the only committed vector where `sender != source` -- every other vector uses addresses below 64, where they are trivially equal |
+| `payload_empty` | 0-byte application payload, the lower bound of the v1 single-frame payload range |
+| `payload_max` | 4-byte application payload, the upper bound of the v1 single-frame payload range |
+| `flag_crc32` | `CSP_FLAG_CRC32` set |
+| `flag_hmac` | `CSP_FLAG_HMAC` set |
+| `reverse_direction` | `src=2 dst=1`: the same node pair as the baseline, addressed the other way |
+
+`CSP_FLAG_RDP` has no committed vector (see the generation-workflow note
+above); it is covered by a synthetic pack/decode round trip instead.
+
+Regenerating every vector and diffing against what is committed is required
+before merging any change to `tests/golden_vectors/src/csp_client.c` or
+`src/cubesat_testbed/protocol/csp_v2.py`, and also runs nightly in CI (see
+`.github/workflows/golden-vectors.yml`) so an upstream libcsp change (or a
+moved `v2.1` tag) is caught even without a local change triggering it.
 
 ## Fixture contract
 

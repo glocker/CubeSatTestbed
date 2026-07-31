@@ -1,0 +1,15 @@
+name = "flag_hmac"
+capture = "flag_hmac.txt"
+libcsp_repo = "https://github.com/libcsp/libcsp"
+libcsp_tag = "v2.1"
+libcsp_commit = "48f7fb0"
+command = "/app/tests/golden_vectors/bin/csp_client -c vcan0 -p -d 2 -o hmac -l 0"
+capture_command = "candump -n 1 vcan0 > /app/tests/golden_vectors/flag_hmac.txt"
+interface = "vcan0"
+meaning = "Single-frame CSP v2 ping-port request from node 1 to node 2 with the CSP_FLAG_HMAC header bit set and a zero-byte application payload (libcsp appends its own 4-byte HMAC trailer to the payload; using a 1-byte application payload here would push the packet over the v1 single-frame limit and into multi-frame libcsp transmission, which is out of v1 scope). Covers the HMAC flag bit; the testbed's v1 codec treats CSP flags as an opaque bitmask and does not itself compute or verify the HMAC."
+protocol = "CSP v2 over classic CAN 2.0B extended frame"
+source_address = 1
+destination_address = 2
+expected_flags = 8
+expected_extended_can_id = "0x10004083"
+expected_payload_hex = "00 04 14 88 FB DB 1D 1B"

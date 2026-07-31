@@ -14,13 +14,19 @@
 #define DEFAULT_CAN_INTERFACE "vcan0"
 #define DEFAULT_SOURCE_ADDRESS 1U
 #define DEFAULT_DESTINATION_ADDRESS 2U
-#define PING_PAYLOAD_BYTE 0x55U
+#define DEFAULT_PRIORITY CSP_PRIO_NORM
+#define DEFAULT_PAYLOAD_LENGTH 1U
+#define MAX_PAYLOAD_LENGTH 4U
+#define PAYLOAD_BASE_BYTE 0x55U
 
 /** Runtime options parsed from the vector helper command line. */
 struct options {
     const char *can_interface;
     uint16_t source_address;
     uint16_t destination_address;
+    uint8_t priority;
+    uint32_t csp_opts;
+    uint16_t payload_length;
     bool send_ping;
 };
 
@@ -33,19 +39,30 @@ struct options {
 static void print_usage(FILE *stream, const char *program) {
     fprintf(stream,
             "Usage: %s -p [-c can-interface] [-a source-address] [-d destination-address]\n"
+            "          [-r priority] [-l payload-length] [-o flag[,flag...]]\n"
             "\n"
             "Generate libcsp CSP v2 SocketCAN traffic for repository golden vectors.\n"
             "\n"
             "Options:\n"
-            "  -p                      send one single-frame CSP ping request\n"
+            "  -p                      send one single-frame CSP ping-port request\n"
             "  -c <can-interface>      SocketCAN interface (default: %s)\n"
             "  -a <source-address>     CSP source/interface address (default: %u)\n"
             "  -d <destination-address> CSP destination address (default: %u)\n"
+            "  -r <priority>           CSP priority 0-3: 0=critical 1=high 2=norm 3=low\n"
+            "                          (default: %u)\n"
+            "  -l <payload-length>     payload bytes, 0-%u (default: %u); filled with an\n"
+            "                          incrementing pattern starting at 0x%02x\n"
+            "  -o <flag[,flag...]>     comma-separated CSP options: crc32, rdp, hmac\n"
+            "                          (default: none)\n"
             "  -h                      show this help\n",
             program,
             DEFAULT_CAN_INTERFACE,
             DEFAULT_SOURCE_ADDRESS,
-            DEFAULT_DESTINATION_ADDRESS);
+            DEFAULT_DESTINATION_ADDRESS,
+            (unsigned)DEFAULT_PRIORITY,
+            MAX_PAYLOAD_LENGTH,
+            DEFAULT_PAYLOAD_LENGTH,
+            PAYLOAD_BASE_BYTE);
 }
 
 /**
@@ -73,6 +90,42 @@ static bool parse_u16(const char *value, uint16_t max_value, uint16_t *result) {
 }
 
 /**
+ * Parse a comma-separated list of named CSP connection options into a libcsp
+ * options bitmask.
+ *
+ * @param value Comma-separated flag names: crc32, rdp, hmac.
+ * @param result Destination for the combined CSP_O_* bitmask on success.
+ * @return true if every name in ``value`` is recognized, otherwise false.
+ */
+static bool parse_csp_opts(const char *value, uint32_t *result) {
+    uint32_t opts = CSP_O_NONE;
+    char buffer[128];
+    if (strlen(value) >= sizeof(buffer)) {
+        return false;
+    }
+    strcpy(buffer, value);
+
+    char *saveptr = NULL;
+    char *token = strtok_r(buffer, ",", &saveptr);
+    while (token != NULL) {
+        if (strcmp(token, "crc32") == 0) {
+            opts |= CSP_O_CRC32;
+        } else if (strcmp(token, "rdp") == 0) {
+            opts |= CSP_O_RDP;
+        } else if (strcmp(token, "hmac") == 0) {
+            opts |= CSP_O_HMAC;
+        } else {
+            fprintf(stderr, "Unknown CSP option flag: %s\n", token);
+            return false;
+        }
+        token = strtok_r(NULL, ",", &saveptr);
+    }
+
+    *result = opts;
+    return true;
+}
+
+/**
  * Decode supported helper options into the provided options structure.
  *
  * The caller initializes defaults before calling this function; parse_args()
@@ -87,7 +140,8 @@ static bool parse_u16(const char *value, uint16_t max_value, uint16_t *result) {
  */
 static bool parse_args(int argc, char **argv, struct options *options) {
     int opt;
-    while ((opt = getopt(argc, argv, "c:a:d:ph")) != -1) {
+    uint16_t parsed_u16;
+    while ((opt = getopt(argc, argv, "c:a:d:r:l:o:ph")) != -1) {
         switch (opt) {
             case 'c':
                 options->can_interface = optarg;
@@ -104,6 +158,25 @@ static bool parse_args(int argc, char **argv, struct options *options) {
                     return false;
                 }
                 break;
+            case 'r':
+                if (!parse_u16(optarg, 3U, &parsed_u16)) {
+                    fprintf(stderr, "Invalid priority (0-3): %s\n", optarg);
+                    return false;
+                }
+                options->priority = (uint8_t)parsed_u16;
+                break;
+            case 'l':
+                if (!parse_u16(optarg, MAX_PAYLOAD_LENGTH, &parsed_u16)) {
+                    fprintf(stderr, "Invalid payload length (0-%u): %s\n", MAX_PAYLOAD_LENGTH, optarg);
+                    return false;
+                }
+                options->payload_length = parsed_u16;
+                break;
+            case 'o':
+                if (!parse_csp_opts(optarg, &options->csp_opts)) {
+                    return false;
+                }
+                break;
             case 'p':
                 options->send_ping = true;
                 break;
@@ -116,7 +189,7 @@ static bool parse_args(int argc, char **argv, struct options *options) {
     }
 
     if (!options->send_ping) {
-        fprintf(stderr, "No vector action selected; pass -p to send the ping vector.\n");
+        fprintf(stderr, "No vector action selected; pass -p to send the ping-port vector.\n");
         return false;
     }
 
@@ -124,31 +197,34 @@ static bool parse_args(int argc, char **argv, struct options *options) {
 }
 
 /**
- * Send the fixed CSP ping request used by the first committed golden vector.
+ * Send the configured single-frame CSP request used by the committed golden
+ * vectors.
  *
  * The packet is emitted through the official libcsp SocketCAN path, not by
- * manually constructing a CAN frame, so the captured bytes remain a libcsp-owned
- * source of truth for the future Python codec. csp_connect()/csp_send() are used
- * instead of csp_ping() because the vector must be a one-byte, no-reply,
- * no-CRC, single-frame packet.
+ * manually constructing a CAN frame, so the captured bytes remain a
+ * libcsp-owned source of truth for the Python codec. csp_connect()/csp_send()
+ * are used instead of csp_ping() so every vector stays a no-reply,
+ * single-frame packet regardless of requested priority/options/payload
+ * length.
  *
  * @param can_iface libcsp CAN interface used for transmission and TX accounting.
- * @param destination_address CSP destination node address for the ping request.
+ * @param options Parsed command-line options selecting destination, priority,
+ * CSP connection options, and payload length/content.
  * @return EXIT_SUCCESS after libcsp reports one transmitted packet, otherwise
  * EXIT_FAILURE.
  */
-static int send_ping_request(csp_iface_t *can_iface, uint16_t destination_address) {
+static int send_vector_packet(csp_iface_t *can_iface, const struct options *options) {
     uint32_t tx_before = can_iface->tx;
     uint32_t tx_error_before = can_iface->tx_error;
 
     csp_conn_t *connection = csp_connect(
-        CSP_PRIO_NORM,
-        destination_address,
+        options->priority,
+        options->destination_address,
         CSP_PING,
         0,
-        CSP_O_NONE);
+        options->csp_opts);
     if (connection == NULL) {
-        fprintf(stderr, "Failed to create CSP ping connection.\n");
+        fprintf(stderr, "Failed to create CSP connection.\n");
         return EXIT_FAILURE;
     }
 
@@ -159,8 +235,10 @@ static int send_ping_request(csp_iface_t *can_iface, uint16_t destination_addres
         return EXIT_FAILURE;
     }
 
-    packet->data[0] = PING_PAYLOAD_BYTE;
-    packet->length = 1;
+    for (uint16_t i = 0; i < options->payload_length; i++) {
+        packet->data[i] = (uint8_t)(PAYLOAD_BASE_BYTE + i);
+    }
+    packet->length = options->payload_length;
 
     csp_send(connection, packet);
     csp_close(connection);
@@ -170,7 +248,7 @@ static int send_ping_request(csp_iface_t *can_iface, uint16_t destination_addres
      * on silent TX errors.
      */
     if ((can_iface->tx == tx_before) || (can_iface->tx_error != tx_error_before)) {
-        fprintf(stderr, "Failed to transmit CSP ping request on SocketCAN.\n");
+        fprintf(stderr, "Failed to transmit CSP request on SocketCAN.\n");
         return EXIT_FAILURE;
     }
 
@@ -189,6 +267,9 @@ int main(int argc, char **argv) {
         .can_interface = DEFAULT_CAN_INTERFACE,
         .source_address = DEFAULT_SOURCE_ADDRESS,
         .destination_address = DEFAULT_DESTINATION_ADDRESS,
+        .priority = DEFAULT_PRIORITY,
+        .csp_opts = CSP_O_NONE,
+        .payload_length = DEFAULT_PAYLOAD_LENGTH,
         .send_ping = false,
     };
 
@@ -237,7 +318,7 @@ int main(int argc, char **argv) {
 #endif
 
     if (options.send_ping) {
-        return send_ping_request(can_iface, options.destination_address);
+        return send_vector_packet(can_iface, &options);
     }
 
     return EXIT_SUCCESS;
