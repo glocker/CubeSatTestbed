@@ -14,7 +14,15 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Self, TypeAlias
 
 import yaml  # type: ignore[import-untyped]
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 from cubesat_testbed.protocol.csp_v2 import (
     CSP_V2_ADDRESS_MAX,
@@ -24,7 +32,7 @@ from cubesat_testbed.protocol.csp_v2 import (
     CSP_V2_SINGLE_FRAME_MAX_PAYLOAD_BYTES,
 )
 
-_SCHEMA_MODEL_CONFIG = ConfigDict(extra="forbid", str_strip_whitespace=True)
+_SCHEMA_MODEL_CONFIG = ConfigDict(extra="forbid", str_strip_whitespace=True, populate_by_name=True)
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _PATH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$")
@@ -274,6 +282,74 @@ class TelemetryMapping(BaseModel):
         return f"{node_name}.telemetry.{mapping_name}"
 
 
+class ObcRuleCommandAction(BaseModel):
+    """Rule action that emits a configured named command."""
+
+    model_config = _SCHEMA_MODEL_CONFIG
+
+    type: Literal["send_command"]
+    command: str
+
+    @field_validator("command")
+    @classmethod
+    def _validate_command(cls, value: str) -> str:
+        return _validate_identifier("rule action command", value)
+
+
+class ObcRuleFaultAction(BaseModel):
+    """Rule action that calls the passive Fault Injection Engine."""
+
+    model_config = _SCHEMA_MODEL_CONFIG
+
+    type: Literal["inject_fault"]
+    fault_type: FaultType
+    target: str
+    value: object = None
+    duration: VirtualDuration | None = None
+    cycles: VirtualCycleCount | None = None
+
+    @field_validator("target")
+    @classmethod
+    def _validate_target(cls, value: str) -> str:
+        return _validate_path("rule action fault target", value, min_segments=2)
+
+    @model_validator(mode="after")
+    def _validate_fault_target_combination(self) -> Self:
+        _validate_fault_type_target_combination(
+            self.fault_type, self.target, duration=self.duration, cycles=self.cycles
+        )
+        return self
+
+
+ObcRuleAction: TypeAlias = Annotated[
+    ObcRuleCommandAction | ObcRuleFaultAction,
+    Field(discriminator="type"),
+]
+
+
+class ObcRule(BaseModel):
+    """One stateless threshold rule for the OBC Peer rule engine.
+
+    Mirrors :class:`cubesat_testbed.modules.obc_peer.ObcPeerRule`; the runner
+    builds that runtime dataclass from this validated config so the config
+    layer does not need to import the modules package.
+    """
+
+    model_config = _SCHEMA_MODEL_CONFIG
+
+    signal: str
+    op: Literal["<", "<=", ">", ">="]
+    threshold: float
+    for_duration: VirtualDuration = Field(default=0, alias="for")
+    cooldown: VirtualDuration = 0
+    actions: tuple[ObcRuleAction, ...] = Field(min_length=1)
+
+    @field_validator("signal")
+    @classmethod
+    def _validate_signal(cls, value: str) -> str:
+        return _validate_path("rule signal", value, min_segments=3)
+
+
 class NodeConfig(BaseModel):
     """One configured subsystem node."""
 
@@ -284,6 +360,7 @@ class NodeConfig(BaseModel):
     module_type: ModuleType | None = None
     commands: dict[str, CommandMapping] = Field(default_factory=dict)
     telemetry: dict[str, TelemetryMapping] = Field(default_factory=dict)
+    rules: dict[str, ObcRule] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_mode_module_combination(self) -> Self:
@@ -291,6 +368,8 @@ class NodeConfig(BaseModel):
             raise ValueError("simulated nodes must declare module_type")
         if self.mode is not NodeMode.SIMULATED and self.module_type is not None:
             raise ValueError("module_type is only valid for simulated nodes")
+        if self.rules and self.module_type is not ModuleType.OBC_PEER:
+            raise ValueError("rules is only valid for module_type = 'obc_peer'")
         return self
 
 
@@ -426,17 +505,9 @@ class InjectFaultStep(BaseModel):
 
     @model_validator(mode="after")
     def _validate_fault_target_combination(self) -> Self:
-        if self.type is FaultType.STATE_OVERRIDE and ".model." not in self.target:
-            raise ValueError("state_override targets must include '.model.'")
-        if self.type is FaultType.SIGNAL_OVERRIDE and ".telemetry." not in self.target:
-            raise ValueError("signal_override targets must include '.telemetry.'")
-        if self.type is FaultType.NAMED_FAULT:
-            if any(marker in self.target for marker in (".model.", ".telemetry.")):
-                raise ValueError(
-                    "named_fault targets must name a module fault flag, not model/telemetry"
-                )
-            if self.duration is not None or self.cycles is not None:
-                raise ValueError("named_fault requests do not support duration or cycles")
+        _validate_fault_type_target_combination(
+            self.type, self.target, duration=self.duration, cycles=self.cycles
+        )
         return self
 
 
@@ -530,6 +601,41 @@ def load_testbed_config(path: str | Path) -> TestbedConfig:
     """Load and validate setup TOML from ``path``."""
 
     return parse_testbed_config(_read_text(path))
+
+
+def parse_obc_rules_file(text: str) -> dict[str, dict[str, ObcRule]]:
+    """Parse a standalone OBC Peer rules TOML file.
+
+    A rules file overrides a setup's inline ``[nodes.<node>.rules.*]``, for
+    example to run the same satellite/testbed setup against several different
+    FDIR rule sets. Its shape is ``[<obc-node-name>.<rule-name>]``, reusing the
+    exact same :class:`ObcRule` schema as inline setup rules:
+
+    .. code-block:: toml
+
+        [obc.low_battery_shed_payload]
+        signal = "eps.telemetry.battery_percent"
+        op = "<"
+        threshold = 30.0
+        for = "3s"
+
+        [[obc.low_battery_shed_payload.actions]]
+        type = "send_command"
+        command = "payload_power_off"
+    """
+
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigParseError(f"invalid rules TOML: {exc}") from exc
+    adapter = TypeAdapter(dict[str, dict[str, ObcRule]])
+    return adapter.validate_python(data)
+
+
+def load_obc_rules_file(path: str | Path) -> dict[str, dict[str, ObcRule]]:
+    """Load and validate a standalone OBC Peer rules TOML file from ``path``."""
+
+    return parse_obc_rules_file(_read_text(path))
 
 
 def parse_scenario(text: str, *, setup: TestbedConfig | None = None) -> ScenarioScript:
@@ -746,6 +852,28 @@ def _validate_path(kind: str, value: str, *, min_segments: int) -> str:
     return value
 
 
+def _validate_fault_type_target_combination(
+    fault_type: FaultType,
+    target: str,
+    *,
+    duration: int | None,
+    cycles: int | None,
+) -> None:
+    """Shared by ``InjectFaultStep`` and ``ObcRuleFaultAction``."""
+
+    if fault_type is FaultType.STATE_OVERRIDE and ".model." not in target:
+        raise ValueError("state_override targets must include '.model.'")
+    if fault_type is FaultType.SIGNAL_OVERRIDE and ".telemetry." not in target:
+        raise ValueError("signal_override targets must include '.telemetry.'")
+    if fault_type is FaultType.NAMED_FAULT:
+        if any(marker in target for marker in (".model.", ".telemetry.")):
+            raise ValueError(
+                "named_fault targets must name a module fault flag, not model/telemetry"
+            )
+        if duration is not None or cycles is not None:
+            raise ValueError("named_fault requests do not support duration or cycles")
+
+
 def _path_root(path: str) -> str:
     return path.split(".", maxsplit=1)[0]
 
@@ -765,6 +893,10 @@ __all__ = [
     "ModuleType",
     "NodeConfig",
     "NodeMode",
+    "ObcRule",
+    "ObcRuleAction",
+    "ObcRuleCommandAction",
+    "ObcRuleFaultAction",
     "ScenarioParseError",
     "ScenarioReferenceError",
     "ScenarioScript",
@@ -777,8 +909,10 @@ __all__ = [
     "VirtualCycleCount",
     "VirtualDuration",
     "WaitStep",
+    "load_obc_rules_file",
     "load_scenario",
     "load_testbed_config",
+    "parse_obc_rules_file",
     "parse_scenario",
     "parse_testbed_config",
     "validate_scenario_references",

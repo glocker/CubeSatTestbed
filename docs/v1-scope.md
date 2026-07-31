@@ -76,6 +76,29 @@ v1 rule semantics: threshold conditions, `for` duration on a trigger,
 `cooldown`; no ACK waiting; commands are configured as named commands mapped
 to binary payloads; no stateful "on enter/on exit" rules.
 
+Rules live in setup config under `[nodes.<obc-node>.rules.<name>]`, so the
+low-battery example above is not built into the engine — it is exactly what
+`configs/default_satellite.toml` declares:
+
+```toml
+[nodes.obc.rules.low_battery_shed_payload]
+signal = "eps.telemetry.battery_percent"
+op = "<"
+threshold = 30.0
+for = "3s"
+
+[[nodes.obc.rules.low_battery_shed_payload.actions]]
+type = "send_command"
+command = "payload_power_off"
+```
+
+An OBC node's rules can be overridden wholesale from a standalone rules file
+(`cubesat-testbed run ... --rules PATH`, or `build_obc_rules_from_file` /
+`obc_rules=` for library callers), for example to run the same satellite
+setup against several different FDIR rule sets without editing it. A rules
+file reuses the exact same schema, keyed by node name at the top level (see
+[`configs/schema/module_schema.md`](../configs/schema/module_schema.md#obc-peer-rules)).
+
 ## Config and scenario files
 
 Static CubeSat/testbed setup uses TOML; scenario scripts use YAML. Both are

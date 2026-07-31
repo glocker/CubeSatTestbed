@@ -10,7 +10,11 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import cast
 
-from cubesat_testbed.scenario import ScenarioRunResult, run_scenario_files
+from cubesat_testbed.scenario import (
+    ScenarioRunResult,
+    build_obc_rules_from_file,
+    run_scenario_files,
+)
 from cubesat_testbed.scenario.assertions import AssertionResult
 
 _EXIT_SUCCESS = 0
@@ -48,9 +52,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="path to the scenario YAML file",
     )
     run_parser.add_argument(
-        "--no-default-obc-rules",
-        action="store_true",
-        help="do not install built-in v1 OBC peer rules",
+        "--rules",
+        type=Path,
+        metavar="PATH",
+        default=None,
+        help=(
+            "path to a standalone OBC Peer rules TOML file overriding a setup's "
+            "inline [nodes.<node>.rules.*]"
+        ),
     )
     run_parser.add_argument(
         "--quiet",
@@ -72,11 +81,12 @@ def _run_command(args: argparse.Namespace) -> int:
     output = io.StringIO() if suppress_assertion_output else None
 
     try:
+        obc_rules = build_obc_rules_from_file(args.rules) if args.rules is not None else None
         result = run_scenario_files(
             args.config,
             args.scenario,
             output=output,
-            install_default_obc_rules=not args.no_default_obc_rules,
+            obc_rules=obc_rules,
         )
     except Exception as exc:  # noqa: BLE001
         # CLI contract: execution errors map to 2; assertion failures map to 1 via result.passed.

@@ -88,6 +88,11 @@ IF eps.temperature > 55C for 2s THEN inject_fault("battery_degradation")
 IF eps.voltage < 6.5V for 1s THEN send_csp_cmd("reset_payload")
 ```
 
+These are configured, not hardcoded: see
+[`configs/schema/module_schema.md`](../configs/schema/module_schema.md#obc-peer-rules)
+for the `[nodes.<obc-node>.rules.*]` TOML syntax these map to, and for
+overriding a node's rules wholesale from a standalone rules file.
+
 ## CSP v2 golden-vector boundary
 
 The CSP v2 codec is implemented only after repository-owned golden vectors are

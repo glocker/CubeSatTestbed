@@ -22,11 +22,15 @@ from cubesat_testbed.config import (
     InMemoryTransportConfig,
     ModuleType,
     NodeMode,
+    ObcRule,
+    ObcRuleCommandAction,
+    ObcRuleFaultAction,
     ScenarioScript,
     SendCommandStep,
     TelemetryMapping,
     TestbedConfig,
     WaitStep,
+    load_obc_rules_file,
     load_scenario,
     load_testbed_config,
 )
@@ -40,18 +44,18 @@ from cubesat_testbed.engine import (
 )
 from cubesat_testbed.fault_injection import FaultInjectionEngine
 from cubesat_testbed.modules import (
-    PAYLOAD_POWER_OFF_COMMAND,
     GenericEpsConfig,
     GenericEpsModule,
     ObcPeerCommandAction,
+    ObcPeerFaultAction,
     ObcPeerModule,
     ObcPeerRule,
+    ObcPeerRuleAction,
     ObcPeerThresholdCondition,
     SimplePayloadConfig,
     SimplePayloadModule,
     SimulatedModule,
     TelemetrySample,
-    ThresholdOperator,
 )
 from cubesat_testbed.protocol.csp_v2 import CspFields, DecodedCspPacket, decode_frame, pack
 from cubesat_testbed.protocol.telemetry_codec import decode_telemetry_value, encode_telemetry_value
@@ -608,14 +612,13 @@ def build_in_memory_runtime(
     setup: TestbedConfig,
     *,
     obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None = None,
-    install_default_obc_rules: bool = True,
 ) -> ScenarioRuntime:
     """Build an in-memory runtime from a validated setup config.
 
-    The default OBC rules mirror the repository's example low-battery scenario:
-    when an OBC node has a configured ``payload_power_off`` command and EPS battery
-    telemetry is mapped, it sheds payload after three virtual ticks below 30%.
-    Pass ``obc_rules`` to provide explicit rules for a given OBC node instead.
+    Each OBC Peer node's rules come from its own ``[nodes.<node>.rules.*]``
+    setup config by default. Pass ``obc_rules`` to override the rules for a
+    given OBC node instead, for example with a set loaded from a standalone
+    rules file (see ``load_obc_rules_file``).
     """
 
     if not isinstance(setup.transport, InMemoryTransportConfig):
@@ -646,12 +649,7 @@ def build_in_memory_runtime(
 
     for node_name, node in setup.nodes.items():
         if node.module_type is ModuleType.OBC_PEER:
-            rules = _rules_for_obc_node(
-                setup,
-                node_name,
-                obc_rules=obc_rules,
-                install_default_obc_rules=install_default_obc_rules,
-            )
+            rules = _rules_for_obc_node(setup, node_name, obc_rules=obc_rules)
             obc = ObcPeerModule.from_testbed_config(
                 setup,
                 source_node=node_name,
@@ -694,15 +692,10 @@ def run_scenario(
     *,
     output: TextIO | None = None,
     obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None = None,
-    install_default_obc_rules: bool = True,
 ) -> ScenarioRunResult:
     """Build an in-memory runtime and execute a parsed scenario."""
 
-    runtime = build_in_memory_runtime(
-        setup,
-        obc_rules=obc_rules,
-        install_default_obc_rules=install_default_obc_rules,
-    )
+    runtime = build_in_memory_runtime(setup, obc_rules=obc_rules)
     return ScenarioRunner(runtime, output=output).run(scenario)
 
 
@@ -712,19 +705,28 @@ def run_scenario_files(
     *,
     output: TextIO | None = None,
     obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None = None,
-    install_default_obc_rules: bool = True,
 ) -> ScenarioRunResult:
     """Load setup/scenario files, validate references, and execute them."""
 
     setup = load_testbed_config(setup_path)
     scenario = load_scenario(scenario_path, setup=setup)
-    return run_scenario(
-        scenario,
-        setup,
-        output=output,
-        obc_rules=obc_rules,
-        install_default_obc_rules=install_default_obc_rules,
-    )
+    return run_scenario(scenario, setup, output=output, obc_rules=obc_rules)
+
+
+def build_obc_rules_from_file(path: str | Path) -> dict[str, tuple[ObcPeerRule, ...]]:
+    """Load a standalone OBC Peer rules file into runtime ``ObcPeerRule``s.
+
+    The result is ready to pass as ``obc_rules`` to :func:`run_scenario_files`
+    to override a setup's inline ``[nodes.<node>.rules.*]`` for a given OBC
+    node, for example to run the same satellite/testbed setup against several
+    different FDIR rule sets.
+    """
+
+    rules_by_node = load_obc_rules_file(path)
+    return {
+        node_name: tuple(_build_obc_peer_rule(name, rule) for name, rule in rules.items())
+        for node_name, rules in rules_by_node.items()
+    }
 
 
 def _build_command_routes(setup: TestbedConfig) -> tuple[_CommandRoute, ...]:
@@ -809,32 +811,36 @@ def _rules_for_obc_node(
     node_name: str,
     *,
     obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None,
-    install_default_obc_rules: bool,
 ) -> tuple[ObcPeerRule, ...]:
     if obc_rules is not None and node_name in obc_rules:
         return tuple(obc_rules[node_name])
-    if not install_default_obc_rules:
-        return ()
-    return _default_obc_rules(setup, source_node=node_name)
+    node = setup.nodes[node_name]
+    return tuple(_build_obc_peer_rule(name, rule) for name, rule in node.rules.items())
 
 
-def _default_obc_rules(setup: TestbedConfig, *, source_node: str) -> tuple[ObcPeerRule, ...]:
-    node = setup.nodes[source_node]
-    if PAYLOAD_POWER_OFF_COMMAND not in node.commands:
-        return ()
-    if "eps.telemetry.battery_percent" not in setup.telemetry_signal_names():
-        return ()
-    return (
-        ObcPeerRule(
-            name="low_battery_shed_payload",
-            condition=ObcPeerThresholdCondition(
-                "eps.telemetry.battery_percent",
-                ThresholdOperator.LT,
-                30.0,
-            ),
-            actions=(ObcPeerCommandAction(PAYLOAD_POWER_OFF_COMMAND),),
-            for_duration=3 * _PHYSICAL_STEP_US,
-        ),
+def _build_obc_peer_rule(name: str, rule: ObcRule) -> ObcPeerRule:
+    """Convert one validated config ``ObcRule`` into a runtime ``ObcPeerRule``."""
+
+    return ObcPeerRule(
+        name=name,
+        condition=ObcPeerThresholdCondition(rule.signal, rule.op, rule.threshold),
+        actions=tuple(_build_obc_peer_rule_action(action) for action in rule.actions),
+        for_duration=rule.for_duration,
+        cooldown=rule.cooldown,
+    )
+
+
+def _build_obc_peer_rule_action(
+    action: ObcRuleCommandAction | ObcRuleFaultAction,
+) -> ObcPeerRuleAction:
+    if isinstance(action, ObcRuleCommandAction):
+        return ObcPeerCommandAction(action.command)
+    return ObcPeerFaultAction(
+        fault_type=action.fault_type.value,
+        target=action.target,
+        value=action.value,
+        duration=action.duration,
+        cycles=action.cycles,
     )
 
 
@@ -892,6 +898,7 @@ __all__ = [
     "ScenarioRuntime",
     "ScenarioRuntimeError",
     "build_in_memory_runtime",
+    "build_obc_rules_from_file",
     "run_scenario",
     "run_scenario_files",
 ]

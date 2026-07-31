@@ -42,3 +42,13 @@ type = "uint"
 [nodes.payload.telemetry.power_status.enum]
 0 = "offline"
 1 = "online"
+
+[nodes.obc.rules.low_battery_shed_payload]
+signal = "eps.telemetry.battery_percent"
+op = "<"
+threshold = 30.0
+for = "3s"
+
+[[nodes.obc.rules.low_battery_shed_payload.actions]]
+type = "send_command"
+command = "payload_power_off"

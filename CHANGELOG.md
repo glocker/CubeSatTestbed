@@ -57,3 +57,13 @@ still pre-release.
   window (like a real bus listener that simply hasn't seen a frame yet),
   rather than an immediate error; it only becomes a failed assertion, with an
   explicit "was never observed" detail, once the timeout is reached.
+- **Breaking:** OBC Peer rules are now configured, not hardcoded. An
+  `obc_peer` node's threshold rules come from its own
+  `[nodes.<node>.rules.*]` setup config; the built-in `low_battery_shed_payload`
+  default rule and the `--no-default-obc-rules` / `install_default_obc_rules`
+  flag are removed. `configs/default_satellite.toml` now declares that rule
+  explicitly. `cubesat-testbed run --rules PATH` (or `obc_rules=`/
+  `build_obc_rules_from_file()` for library callers) overrides a node's rules
+  wholesale from a standalone rules file, for example to run the same
+  satellite/testbed setup against several different FDIR rule sets. See
+  [`configs/schema/module_schema.md`](configs/schema/module_schema.md#obc-peer-rules).
