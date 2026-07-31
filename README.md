@@ -199,6 +199,37 @@ uv run cubesat-testbed run --config ... --scenario ... --json --quiet
 Or `--junit-xml PATH` for CI dashboards. Full config syntax:
 [`configs/schema/module_schema.md`](configs/schema/module_schema.md).
 
+## Hardware in the loop
+
+Point the same scenario at a real bus: switch the node under test to
+`mode = "hardware"`, declare a SocketCAN transport, and run with `--realtime`.
+
+```toml
+[transport]
+type = "socketcan"
+interface = "vcan0" # or a physical interface such as "can0"
+```
+
+```sh
+uv run cubesat-testbed run \
+  --realtime \
+  --config configs/examples/socketcan_hil.toml \
+  --scenario configs/scenarios/low_battery.yaml
+```
+
+`--realtime` is what makes a HIL run work: without it the engine jumps
+straight through virtual time and a real board never gets wall-clock time to
+answer. A `socketcan` setup run without the flag therefore warns on `stderr`.
+Under `--realtime`, a scenario that waits `30s` really does take 30 seconds.
+
+For local loopback without hardware, bring up `vcan0` first:
+
+```sh
+sudo modprobe vcan
+sudo ip link add dev vcan0 type vcan
+sudo ip link set up vcan0
+```
+
 ## v1 scope at a glance
 
 - Protocol: CSP v2 only, single-frame, classic CAN 2.0, extended 29-bit IDs.

@@ -860,10 +860,19 @@ def run_scenario(
     obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None = None,
     clock: Clock | None = None,
 ) -> ScenarioRunResult:
-    """Build a runtime (in-memory or SocketCAN, per setup) and run a scenario."""
+    """Build a runtime (in-memory or SocketCAN, per setup) and run a scenario.
+
+    The transport is built here, so it is also closed here -- a HIL run must
+    hand its CAN socket back when the scenario ends, whether it passed, failed
+    or raised. Callers that build their own runtime (``build_runtime`` plus
+    :class:`ScenarioRunner`) keep owning its transport instead.
+    """
 
     runtime = build_runtime(setup, obc_rules=obc_rules, clock=clock)
-    return ScenarioRunner(runtime, output=output).run(scenario)
+    try:
+        return ScenarioRunner(runtime, output=output).run(scenario)
+    finally:
+        runtime.transport.close()
 
 
 def run_scenario_files(

@@ -103,6 +103,15 @@ class TransportAdapter(ABC):
                 return tuple(envelopes)
             envelopes.append(envelope)
 
+    def close(self) -> None:
+        """Release any operating-system resources this adapter holds.
+
+        A no-op by default, since a purely in-process adapter holds none; a
+        HIL adapter overrides it to hand its bus socket back. Must be safe to
+        call more than once, so an owner can close unconditionally without
+        checking whether someone else already did.
+        """
+
 
 __all__ = [
     "EndpointId",

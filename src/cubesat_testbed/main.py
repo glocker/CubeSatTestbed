@@ -11,6 +11,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import cast
 
+from cubesat_testbed.clock import Clock, RealTimeClock
+from cubesat_testbed.config import SocketCanTransportConfig, TestbedConfig, load_testbed_config
 from cubesat_testbed.scenario import (
     ScenarioRunResult,
     build_obc_rules_from_file,
@@ -29,14 +31,17 @@ _EXIT_INTERRUPTED = 130
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cubesat-testbed",
-        description="Run CubeSat Testbed deterministic in-memory scenarios.",
+        description="Run CubeSat Testbed deterministic simulation and hardware-in-the-loop scenarios.",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subcommands.add_parser(
         "run",
         help="run a scenario against a setup config",
-        description="Run a YAML scenario against a TOML setup config using the v1 in-memory runtime.",
+        description=(
+            "Run a YAML scenario against a TOML setup config, on the in-memory runtime by "
+            "default or against a real bus with --realtime."
+        ),
     )
     run_parser.add_argument(
         "-c",
@@ -65,6 +70,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_parser.add_argument(
+        "--realtime",
+        action="store_true",
+        help=(
+            "pace virtual time against wall-clock time instead of jumping through it, "
+            "so a real software/hardware peer gets time to respond; required for HIL runs"
+        ),
+    )
+    run_parser.add_argument(
         "--quiet",
         action="store_true",
         help="suppress normal stdout output; stderr warnings/errors are still emitted",
@@ -89,15 +102,22 @@ def _build_parser() -> argparse.ArgumentParser:
 def _run_command(args: argparse.Namespace) -> int:
     suppress_assertion_output = bool(args.quiet or args.json)
     output = io.StringIO() if suppress_assertion_output else None
+    clock: Clock | None = RealTimeClock() if args.realtime else None
 
     started = time.perf_counter()
     try:
+        # The setup is loaded here as well as inside run_scenario_files, because the
+        # transport/--realtime mismatch is a CLI-level warning and has to be raised
+        # before the run starts. Both loads fail the same way, so a bad config still
+        # reports one concise error and exit code 2.
+        _warn_on_unpaced_socketcan(load_testbed_config(args.config), realtime=args.realtime)
         obc_rules = build_obc_rules_from_file(args.rules) if args.rules is not None else None
         result = run_scenario_files(
             args.config,
             args.scenario,
             output=output,
             obc_rules=obc_rules,
+            clock=clock,
         )
     except Exception as exc:  # noqa: BLE001
         # CLI contract: execution errors map to 2; assertion failures map to 1 via result.passed.
@@ -128,6 +148,27 @@ def _run_command(args: argparse.Namespace) -> int:
     elif not args.quiet:
         _print_summary(result)
     return exit_code
+
+
+def _warn_on_unpaced_socketcan(setup: TestbedConfig, *, realtime: bool) -> None:
+    """Warn when a real bus is configured but virtual time is not paced against it.
+
+    Without ``--realtime`` the run uses the default ``VirtualClock``, which jumps
+    straight to the next scheduled virtual instant and so never gives a real
+    ``software``/``hardware`` peer wall-clock time to answer. That is almost
+    always a mistake on a SocketCAN transport -- but not an error: a SocketCAN
+    setup whose nodes are all ``simulated`` still runs correctly unpaced, and so
+    does a run deliberately kept fast while a peer is not connected yet.
+    """
+
+    if realtime or not isinstance(setup.transport, SocketCanTransportConfig):
+        return
+    print(
+        f"warning: transport.type='socketcan' (interface {setup.transport.interface!r}) "
+        "without --realtime; virtual time is not paced against wall-clock time, so a "
+        "real peer gets no time to respond",
+        file=sys.stderr,
+    )
 
 
 def _write_junit_error_xml(path: Path, message: str, *, kind: str, started: float) -> None:

@@ -276,7 +276,8 @@ transport, whether that traffic comes from a real board, a real process on
 By default, `wait()` uses `cubesat_testbed.clock.VirtualClock` and jumps
 straight to its target virtual time, exactly as before. Passing
 `clock=RealTimeClock()` to `run_scenario`/`run_scenario_files`/`build_runtime`
-instead paces that jump against wall-clock time: `wait()` blocks on the
+(or `--realtime` on the CLI, which builds the same clock) instead paces that
+jump against wall-clock time: `wait()` blocks on the
 transport's `receive(timeout=...)` for whatever real time remains before the
 next due virtual instant, delivering any frame that arrives as soon as it
 does rather than only once the full window elapses. This is what lets a HIL
@@ -296,7 +297,15 @@ replays the project's committed golden-vector ping — the exact bytes official
 libcsp v2.1 puts on the wire — over `vcan0` and confirms `build_runtime`'s
 `SocketCanAdapter` receives and decodes it, and that a command frame arriving
 the same way reaches and mutates the correct simulated module through the
-full scenario runner delivery path.
+full scenario runner delivery path. The same file also drives
+`configs/examples/socketcan_hil.toml` end to end through the CLI's own
+`run --realtime` path, against a peer answering from outside the process on
+`vcan0`.
+
+The transport a run builds for itself is also closed by that run:
+`run_scenario`/`run_scenario_files` release the CAN socket when the scenario
+ends, whether it passed, failed or raised. A caller that builds its own
+runtime through `build_runtime` keeps owning (and closing) that transport.
 
 ## Running scenarios from CLI
 
@@ -341,5 +350,35 @@ If a scenario contains zero assertions, the CLI prints
 `warning: 0 assertions in scenario` to `stderr` so a vacuously passing run is
 visible in logs.
 
-v1 CLI intentionally targets the in-memory runtime; long-running HIL flows
-remain future work.
+### Hardware-in-the-loop from the CLI
+
+`--realtime` runs the scenario on a `RealTimeClock` instead of the default
+`VirtualClock`, so virtual time is paced against wall-clock time and a real
+`software`/`hardware` peer gets an actual window to answer. Combined with a
+`socketcan` transport in the setup config, this is the full HIL path from the
+command line, with no Python glue:
+
+```sh
+uv run cubesat-testbed run \
+  --realtime \
+  --config configs/examples/socketcan_hil.toml \
+  --scenario configs/scenarios/low_battery.yaml
+```
+
+The flag is independent of the transport: `--realtime` on the in-memory bus
+simply sleeps out each wait, which is a way to rehearse a scenario's pacing
+without CAN hardware, and a `socketcan` setup whose nodes are all `simulated`
+still runs correctly unpaced. Since the *combination* of a real bus and an
+unpaced clock is almost always a mistake, a `socketcan` transport without
+`--realtime` prints a warning to `stderr` and continues:
+
+```text
+warning: transport.type='socketcan' (interface 'vcan0') without --realtime; virtual time is not paced against wall-clock time, so a real peer gets no time to respond
+```
+
+Warnings go to `stderr`, so they compose with `--json`/`--quiet` without
+corrupting machine-readable `stdout`.
+
+Note that virtual-time durations now cost real time: a scenario that waits
+`30s` takes 30 seconds under `--realtime`. Size scenario waits and assertion
+timeouts accordingly.

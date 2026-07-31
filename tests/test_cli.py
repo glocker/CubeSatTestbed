@@ -1,19 +1,60 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
 
+from cubesat_testbed.clock import RealTimeClock
 from cubesat_testbed.main import main
+from cubesat_testbed.scenario import ScenarioRunResult
+from cubesat_testbed.scenario.assertions import AssertionOperator, AssertionResult
 
 DEFAULT_CONFIG = "configs/default_satellite.toml"
 LOW_BATTERY_SCENARIO = "configs/scenarios/low_battery.yaml"
+SOCKETCAN_CONFIG = "configs/examples/socketcan_hil.toml"
 
 
 def _raise_keyboard_interrupt(*_args: object, **_kwargs: object) -> object:
     raise KeyboardInterrupt
+
+
+def _passing_result() -> ScenarioRunResult:
+    """A minimal passing run result, for stubbing out an actual scenario run."""
+
+    return ScenarioRunResult(
+        scenario_name="stubbed",
+        started_at=0,
+        finished_at=0,
+        assertions=(
+            AssertionResult(
+                name="assert_1",
+                signal="eps.telemetry.battery_percent",
+                operator=AssertionOperator.EQ,
+                expected=100.0,
+                actual=100.0,
+                passed=True,
+                evaluated_at=0,
+                detail="",
+            ),
+        ),
+    )
+
+
+def _record_run_kwargs(recorded: dict[str, object]) -> object:
+    """Stub `run_scenario_files`, capturing the keyword arguments it was given.
+
+    Used by the flag-plumbing tests so they assert on what the CLI hands the
+    runner, without paying an actual paced run's wall-clock time.
+    """
+
+    def _run(*_args: object, **kwargs: object) -> ScenarioRunResult:
+        recorded.update(kwargs)
+        return _passing_result()
+
+    return _run
 
 
 def test_cli_help_includes_run_command(capsys: pytest.CaptureFixture[str]) -> None:
@@ -369,3 +410,106 @@ def test_cli_run_junit_xml_reports_interrupted_on_keyboard_interrupt(
     testsuite = root.find("testsuite")
     assert testsuite is not None
     assert testsuite.get("errors") == "1"
+
+
+def test_cli_run_realtime_flag_passes_a_real_time_clock_to_the_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded: dict[str, object] = {}
+    monkeypatch.setattr("cubesat_testbed.main.run_scenario_files", _record_run_kwargs(recorded))
+
+    exit_code = main(["run", "--realtime", "-c", DEFAULT_CONFIG, "-s", LOW_BATTERY_SCENARIO])
+
+    assert exit_code == 0
+    assert isinstance(recorded["clock"], RealTimeClock)
+
+
+def test_cli_run_without_realtime_leaves_the_runner_on_the_virtual_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded: dict[str, object] = {}
+    monkeypatch.setattr("cubesat_testbed.main.run_scenario_files", _record_run_kwargs(recorded))
+
+    exit_code = main(["run", "-c", DEFAULT_CONFIG, "-s", LOW_BATTERY_SCENARIO])
+
+    assert exit_code == 0
+    # None means "runner's own default", which is the VirtualClock.
+    assert recorded["clock"] is None
+
+
+def test_cli_run_realtime_actually_paces_virtual_time_against_the_wall_clock(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No mocks: a 200ms virtual wait takes about 200ms of real time.
+
+    Run against the in-memory transport, so this proves the flag reaches the
+    pacing path itself without needing a CAN interface.
+    """
+
+    scenario_path = tmp_path / "paced.yaml"
+    scenario_path.write_text(
+        """
+name: Realtime pacing smoke
+steps:
+  - action: wait
+    virtual_time: 200ms
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    started = time.perf_counter()
+    exit_code = main(["run", "--realtime", "-c", DEFAULT_CONFIG, "-s", str(scenario_path)])
+    elapsed = time.perf_counter() - started
+
+    assert exit_code == 0
+    assert elapsed >= 0.15
+    captured = capsys.readouterr()
+    assert captured.err == "warning: 0 assertions in scenario\n"
+
+
+def test_cli_run_warns_for_socketcan_transport_without_realtime(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    recorded: dict[str, object] = {}
+    monkeypatch.setattr("cubesat_testbed.main.run_scenario_files", _record_run_kwargs(recorded))
+
+    exit_code = main(["run", "-c", SOCKETCAN_CONFIG, "-s", LOW_BATTERY_SCENARIO])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert captured.err == (
+        "warning: transport.type='socketcan' (interface 'vcan0') without --realtime; "
+        "virtual time is not paced against wall-clock time, so a real peer gets no "
+        "time to respond\n"
+    )
+
+
+def test_cli_run_socketcan_warning_stays_on_stderr_in_json_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    recorded: dict[str, object] = {}
+    monkeypatch.setattr("cubesat_testbed.main.run_scenario_files", _record_run_kwargs(recorded))
+
+    exit_code = main(["run", "--json", "-c", SOCKETCAN_CONFIG, "-s", LOW_BATTERY_SCENARIO])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "without --realtime" in captured.err
+    assert json.loads(captured.out)["passed"] is True
+
+
+def test_cli_run_does_not_warn_for_socketcan_transport_with_realtime(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    recorded: dict[str, object] = {}
+    monkeypatch.setattr("cubesat_testbed.main.run_scenario_files", _record_run_kwargs(recorded))
+
+    exit_code = main(["run", "--realtime", "-c", SOCKETCAN_CONFIG, "-s", LOW_BATTERY_SCENARIO])
+
+    assert exit_code == 0
+    assert isinstance(recorded["clock"], RealTimeClock)
+    assert capsys.readouterr().err == ""

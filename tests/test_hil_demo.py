@@ -25,15 +25,33 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+import time
+from pathlib import Path
 
 import pytest
 
 from cubesat_testbed.config import parse_testbed_config
-from cubesat_testbed.protocol.csp_v2 import CSP_PORT_PING, CspFields, decode_frame, pack
+from cubesat_testbed.main import main
+from cubesat_testbed.protocol.csp_v2 import (
+    CSP_PORT_PING,
+    CspCanFrame,
+    CspFields,
+    decode_frame,
+    pack,
+)
 from cubesat_testbed.scenario import ScenarioRunner, build_runtime
 from cubesat_testbed.transport import SocketCanAdapter
 
 pytestmark = pytest.mark.socketcan
+
+_HIL_EXAMPLE_CONFIG = Path("configs/examples/socketcan_hil.toml")
+# The shipped example's payload node: a `hardware` DUT at CSP address 3 whose
+# power_status telemetry is a self-addressed single-byte enum on port 21.
+_PAYLOAD_ADDRESS = 3
+_PAYLOAD_TELEMETRY_PORT = 21
+_PAYLOAD_OFFLINE = b"\x00"
+_PEER_RESPONSE_DELAY_SECONDS = 0.4
 
 
 def _interface() -> str:
@@ -41,6 +59,72 @@ def _interface() -> str:
     if interface is None:
         pytest.skip("set CUBESAT_TESTBED_SOCKETCAN_INTERFACE to run SocketCAN HIL demo tests")
     return interface
+
+
+def _hil_setup_file(tmp_path: Path, interface: str) -> Path:
+    """Copy the shipped SocketCAN example config, pointed at ``interface``.
+
+    Using the real example rather than an inline config keeps the file the
+    README sends HIL users to on the tested path; only the interface name is
+    substituted, since the environment may expose something other than
+    ``vcan0``.
+    """
+
+    text = _HIL_EXAMPLE_CONFIG.read_text(encoding="utf-8")
+    setup_path = tmp_path / _HIL_EXAMPLE_CONFIG.name
+    setup_path.write_text(
+        text.replace('interface = "vcan0"', f'interface = "{interface}"'), "utf-8"
+    )
+    return setup_path
+
+
+def _payload_offline_scenario(tmp_path: Path) -> Path:
+    scenario_path = tmp_path / "payload_offline.yaml"
+    scenario_path.write_text(
+        """
+name: Payload reports itself offline over the real bus
+steps:
+  - action: assert
+    name: payload_offline
+    signal: payload.telemetry.power_status
+    op: "=="
+    value: "offline"
+    timeout: "2s"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return scenario_path
+
+
+def _start_payload_peer(interface: str) -> threading.Thread:
+    """Answer as the payload DUT would, after a real wall-clock delay.
+
+    The delay is the whole point: an unpaced run finishes long before it
+    elapses, so this peer is only ever heard by a run that actually gives real
+    hardware time to speak.
+    """
+
+    frame = pack(
+        CspFields(
+            priority=2,
+            source=_PAYLOAD_ADDRESS,
+            destination=_PAYLOAD_ADDRESS,
+            destination_port=_PAYLOAD_TELEMETRY_PORT,
+            source_port=_PAYLOAD_TELEMETRY_PORT,
+        ),
+        _PAYLOAD_OFFLINE,
+    )
+
+    def _respond(frame: CspCanFrame = frame) -> None:
+        time.sleep(_PEER_RESPONSE_DELAY_SECONDS)
+        subprocess.run(
+            ["cansend", interface, f"{frame.can_id:08X}#{frame.data.hex()}"],
+            check=True,
+        )
+
+    thread = threading.Thread(target=_respond, daemon=True)
+    thread.start()
+    return thread
 
 
 def test_build_runtime_receives_and_decodes_a_real_libcsp_frame_over_the_bus() -> None:
@@ -131,3 +215,57 @@ def test_scenario_runner_delivers_a_real_bus_command_to_a_simulated_module() -> 
         runtime.transport.close()
 
     assert runtime.module("payload").telemetry()["power_status"] == "offline"
+
+
+def test_cli_realtime_run_passes_against_a_peer_answering_on_the_real_bus(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The headline HIL claim, end to end from the CLI and nothing else.
+
+    `cubesat-testbed run --realtime` against the shipped SocketCAN example,
+    with the payload DUT answering from outside this process over a real
+    (virtual) CAN bus: no Python glue, no `clock=` argument, exit code 0.
+    """
+
+    interface = _interface()
+    setup_path = _hil_setup_file(tmp_path, interface)
+    scenario_path = _payload_offline_scenario(tmp_path)
+
+    peer = _start_payload_peer(interface)
+    try:
+        exit_code = main(["run", "--realtime", "-c", str(setup_path), "-s", str(scenario_path)])
+    finally:
+        peer.join(timeout=5.0)
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "PASS" in captured.out
+    assert "payload_offline: payload.telemetry.power_status == 'offline'" in captured.out
+    assert captured.err == ""
+
+
+def test_cli_run_without_realtime_outruns_the_peer_and_says_so(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The same run without `--realtime`: virtual time jumps straight through
+    the assertion's 2s timeout in milliseconds, so the peer's answer arrives
+    long after the run is over. That is exactly the mistake the CLI warns
+    about, and this test pins both halves -- the warning and the miss.
+    """
+
+    interface = _interface()
+    setup_path = _hil_setup_file(tmp_path, interface)
+    scenario_path = _payload_offline_scenario(tmp_path)
+
+    peer = _start_payload_peer(interface)
+    try:
+        exit_code = main(["run", "-c", str(setup_path), "-s", str(scenario_path)])
+    finally:
+        peer.join(timeout=5.0)
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "without --realtime" in captured.err
+    assert "payload.telemetry.power_status was never observed on the bus" in captured.out

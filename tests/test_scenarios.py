@@ -20,6 +20,7 @@ from cubesat_testbed.scenario import (
     build_obc_rules_from_file,
     run_scenario,
 )
+from cubesat_testbed.transport import InMemoryBusAdapter
 
 
 def test_default_low_battery_scenario_runs_over_virtual_time_with_pass_output() -> None:
@@ -331,3 +332,21 @@ def test_module_params_override_flows_into_runtime_module() -> None:
     runtime = build_in_memory_runtime(setup)
 
     assert runtime.module("eps").telemetry()["battery_percent"] == 42.0
+
+
+def test_run_scenario_closes_the_transport_it_built(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`run_scenario` owns the transport it builds, so it also hands it back.
+
+    Invisible for the in-memory bus, but a HIL run must not leak its CAN
+    socket once the scenario is over.
+    """
+
+    closed: list[object] = []
+    monkeypatch.setattr(InMemoryBusAdapter, "close", lambda self: closed.append(self))
+
+    setup = load_testbed_config(Path("configs/default_satellite.toml"))
+    scenario = load_scenario(Path("configs/scenarios/low_battery.yaml"), setup=setup)
+    result = run_scenario(scenario, setup, output=StringIO())
+
+    assert result.passed
+    assert len(closed) == 1
