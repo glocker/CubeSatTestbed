@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from cubesat_testbed.protocol.csp_v2 import CspCanFrame
@@ -80,6 +82,37 @@ def test_empty_receive_is_non_blocking_and_returns_none() -> None:
 
     assert bus.receive() is None
     assert bus.receive(endpoint="eps") is None
+
+
+def test_receive_of_an_already_queued_frame_ignores_timeout() -> None:
+    bus = InMemoryBusAdapter()
+    frame = _frame(0x10004083, b"instant")
+
+    bus.send(frame)
+
+    # An already-buffered frame returns immediately regardless of timeout,
+    # matching a real bus that already has a frame waiting.
+    envelope = bus.receive(timeout=5.0)
+    assert envelope is not None
+    assert envelope.frame == frame
+
+
+def test_receive_with_no_timeout_on_an_empty_queue_returns_none_immediately() -> None:
+    bus = InMemoryBusAdapter()
+
+    assert bus.receive() is None
+    assert bus.receive(timeout=None) is None
+
+
+def test_receive_with_a_timeout_on_an_empty_queue_sleeps_out_the_full_timeout() -> None:
+    bus = InMemoryBusAdapter()
+
+    started = time.perf_counter()
+    envelope = bus.receive(timeout=0.05)
+    elapsed = time.perf_counter() - started
+
+    assert envelope is None
+    assert elapsed >= 0.045
 
 
 def _frame(can_id: int, payload: bytes) -> CspCanFrame:

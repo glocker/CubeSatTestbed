@@ -89,6 +89,15 @@ def test_receive_converts_python_can_message_to_transport_envelope_without_block
     assert bus.recv_timeouts == [0.0, 0.0]
 
 
+def test_receive_passes_a_deadline_timeout_through_to_the_underlying_bus() -> None:
+    bus = FakeCanBus()
+    adapter = SocketCanAdapter(interface="vcan0", bus=bus)
+
+    assert adapter.receive(timeout=1.5) is None
+
+    assert bus.recv_timeouts == [1.5]
+
+
 def test_send_and_receive_share_adapter_local_sequence_order() -> None:
     frame = _frame()
     bus = FakeCanBus([_message(frame)])

@@ -51,10 +51,13 @@ class TransportEnvelope:
 class TransportAdapter(ABC):
     """Synchronous transport boundary used by simulated and HIL bus adapters.
 
-    The boundary is deliberately non-blocking: ``receive`` returns ``None`` when
-    no frame is currently available instead of sleeping or polling wall-clock
-    time. Future event-engine integration can schedule calls into this interface
-    using virtual time.
+    ``receive`` defaults to non-blocking: it returns ``None`` immediately when
+    no frame is available. Passing ``timeout`` lets a caller (the scenario
+    runner, pacing a HIL run against a :class:`~cubesat_testbed.clock.Clock`)
+    block up to ``timeout`` real seconds for a frame to arrive, returning as
+    soon as one does instead of always waiting the full timeout. Adapters that
+    cannot block (e.g. the in-memory bus, which is always instantaneous)
+    ignore ``timeout``.
     """
 
     @abstractmethod
@@ -72,16 +75,26 @@ class TransportAdapter(ABC):
         """
 
     @abstractmethod
-    def receive(self, *, endpoint: EndpointId | None = None) -> TransportEnvelope | None:
+    def receive(
+        self,
+        *,
+        endpoint: EndpointId | None = None,
+        timeout: float | None = None,
+    ) -> TransportEnvelope | None:
         """Receive the next available frame envelope, or ``None`` if empty.
 
         ``endpoint=None`` represents the adapter's default receive stream. An
         implementation may also expose endpoint-specific streams for simulated
-        nodes.
+        nodes. ``timeout`` is real seconds to block waiting for a frame before
+        giving up (``None`` or ``0`` means a single non-blocking poll).
         """
 
     def drain(self, *, endpoint: EndpointId | None = None) -> tuple[TransportEnvelope, ...]:
-        """Receive all currently available frames from a stream in order."""
+        """Receive all currently available frames from a stream in order.
+
+        Always a non-blocking poll: this drains what is already queued, it
+        does not wait for more to arrive.
+        """
 
         envelopes: list[TransportEnvelope] = []
         while True:

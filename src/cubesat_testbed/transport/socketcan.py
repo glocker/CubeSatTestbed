@@ -106,8 +106,18 @@ class SocketCanAdapter(TransportAdapter):
             ) from exc
         return self._envelope(frame, source=validated_source)
 
-    def receive(self, *, endpoint: EndpointId | None = None) -> TransportEnvelope | None:
-        """Poll the default SocketCAN receive stream once without blocking."""
+    def receive(
+        self,
+        *,
+        endpoint: EndpointId | None = None,
+        timeout: float | None = None,
+    ) -> TransportEnvelope | None:
+        """Poll the default SocketCAN receive stream, optionally blocking.
+
+        ``timeout`` (real seconds) is passed straight through to the
+        underlying ``python-can`` bus's own blocking-with-timeout ``recv``;
+        ``None`` matches this adapter's previous always-non-blocking behavior.
+        """
 
         self._ensure_open()
         if endpoint is not None:
@@ -117,8 +127,9 @@ class SocketCanAdapter(TransportAdapter):
                 "endpoint-specific receive queues are not available"
             )
 
+        bus_timeout = 0.0 if timeout is None else _validate_optional_timeout("timeout", timeout)
         try:
-            message = self._bus.recv(timeout=0.0)
+            message = self._bus.recv(timeout=bus_timeout)
         except (can.CanError, OSError) as exc:
             raise TransportError(
                 f"failed to receive CAN frame from SocketCAN interface {self.interface!r}: {exc}"
