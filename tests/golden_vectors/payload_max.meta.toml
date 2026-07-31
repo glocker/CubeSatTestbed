@@ -1,0 +1,14 @@
+name = "payload_max"
+capture = "payload_max.txt"
+libcsp_repo = "https://github.com/libcsp/libcsp"
+libcsp_tag = "v2.1"
+libcsp_commit = "48f7fb0"
+command = "/app/tests/golden_vectors/bin/csp_client -c vcan0 -p -d 2 -l 4"
+capture_command = "candump -n 1 vcan0 > /app/tests/golden_vectors/payload_max.txt"
+interface = "vcan0"
+meaning = "Single-frame CSP v2 ping-port request from node 1 to node 2 with a 4-byte application payload (0x55 0x56 0x57 0x58): the largest payload that fits product v1's single-frame profile (8-byte classic CAN data field minus the 4-byte CSP v2 header extension), covering the upper bound of the v1 single-frame payload range."
+protocol = "CSP v2 over classic CAN 2.0B extended frame"
+source_address = 1
+destination_address = 2
+expected_extended_can_id = "0x10004083"
+expected_payload_hex = "00 04 14 80 55 56 57 58"

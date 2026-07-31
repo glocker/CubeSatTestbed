@@ -1,0 +1,50 @@
+name: Golden vectors
+
+# Rebuilds official libcsp v2.1 (commit 48f7fb0) from source, regenerates every
+# committed CAN capture under tests/golden_vectors/, and fails if the fresh
+# capture differs from what is committed. This catches an upstream libcsp
+# change (or a moved v2.1 tag) even when no local change triggers the run.
+on:
+  schedule:
+    - cron: "0 3 * * *" # nightly, 03:00 UTC
+  push:
+    branches: [main]
+    paths:
+      - "tests/golden_vectors/**"
+      - "Dockerfile"
+      - "docker-compose.yml"
+  pull_request:
+    paths:
+      - "tests/golden_vectors/**"
+      - "Dockerfile"
+      - "docker-compose.yml"
+  workflow_dispatch: {}
+
+jobs:
+  regenerate-and-diff:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build the libcsp golden-vector image
+        run: docker compose build
+
+      - name: Start the golden-vector container
+        run: docker compose up -d
+
+      - name: Regenerate every committed vector from a fresh libcsp build
+        run: docker compose exec -T libcsp-vectors /app/tests/golden_vectors/scripts/regenerate-vectors.sh
+
+      - name: Stop the golden-vector container
+        if: always()
+        run: docker compose down
+
+      - name: Fail if regenerated vectors differ from committed fixtures
+        run: |
+          if ! git diff --exit-code -- tests/golden_vectors/*.txt; then
+            echo "::error::Freshly captured CAN traffic from libcsp v2.1 (48f7fb0) no longer matches the committed golden vectors."
+            echo "::error::Either upstream libcsp changed on-wire behavior, or a committed fixture is stale. Investigate before merging."
+            exit 1
+          fi

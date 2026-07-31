@@ -1,0 +1,15 @@
+name = "priority_low"
+capture = "priority_low.txt"
+libcsp_repo = "https://github.com/libcsp/libcsp"
+libcsp_tag = "v2.1"
+libcsp_commit = "48f7fb0"
+command = "/app/tests/golden_vectors/bin/csp_client -c vcan0 -p -d 2 -r 3"
+capture_command = "candump -n 1 vcan0 > /app/tests/golden_vectors/priority_low.txt"
+interface = "vcan0"
+meaning = "Single-frame CSP v2 ping-port request from node 1 to node 2 at CSP_PRIO_LOW (3), otherwise identical to the ping_node_2 vector. Covers the high end of the 2-bit priority field."
+protocol = "CSP v2 over classic CAN 2.0B extended frame"
+source_address = 1
+destination_address = 2
+priority = 3
+expected_extended_can_id = "0x18004083"
+expected_payload_hex = "00 04 14 80 55"

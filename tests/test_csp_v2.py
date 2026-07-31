@@ -5,6 +5,8 @@ import pytest
 from cubesat_testbed.protocol.csp_v2 import (
     CSP_FLAG_CRC32,
     CSP_FLAG_FRAGMENT,
+    CSP_FLAG_HMAC,
+    CSP_FLAG_RDP,
     CSP_PORT_PING,
     CSP_PRIO_NORM,
     CSP_V2_ADDRESS_MAX,
@@ -121,6 +123,32 @@ def test_pack_unpack_round_trip_with_explicit_can_metadata() -> None:
     assert decoded.can_fields.frame_count == 0
     assert decoded.can_fields.begin
     assert decoded.can_fields.end
+
+
+def test_pack_unpack_round_trip_with_rdp_flag() -> None:
+    """No committed golden vector carries CSP_FLAG_RDP: RDP is a stateful,
+    connection-oriented protocol layered inside the CSP payload, so a
+    one-shot ``csp_client -p`` capture with no responding peer on the bus
+    cannot produce one (the SYN handshake blocks forever waiting for a reply
+    that never arrives). Unlike CRC32/HMAC, which just append an
+    algorithmically-derived trailer to an otherwise ordinary payload, RDP
+    cannot be captured this way at all -- so this flag bit is exercised as a
+    synthetic pack/decode round trip instead, the same way the CRC32 case
+    above already is for its non-golden-vector coverage.
+    """
+
+    fields = CspFields(
+        priority=2,
+        source=1,
+        destination=2,
+        destination_port=1,
+        source_port=18,
+        flags=CSP_FLAG_RDP,
+    )
+    frame = pack(fields, b"\x55")
+    decoded = decode_frame(frame)
+
+    assert decoded.fields.flags == CSP_FLAG_RDP
 
 
 @pytest.mark.parametrize(
@@ -251,6 +279,51 @@ def test_decode_frame_accepts_can_frame_objects() -> None:
 def test_csp_codec_errors_share_common_base_class() -> None:
     with pytest.raises(CspV2CodecError):
         unpack(0x10004083, bytes(3))
+
+
+def test_high_address_vector_diverges_sender_from_source(
+    golden_vectors: tuple[GoldenVector, ...],
+) -> None:
+    """CSP v2's CAN-ID 'sender' field is only 6 bits wide; libcsp fills it with
+    the low 6 bits of the outgoing interface address. Every other committed
+    vector uses addresses below 64, where ``sender == source`` trivially, so a
+    bug that silently truncated the 14-bit ``source`` field to those 6 bits
+    would go unnoticed by every other test in this file. This vector's
+    source address (65) was chosen specifically so the two numbers differ.
+    """
+
+    vector = _get_vector(golden_vectors, "high_address")
+    decoded = unpack(
+        vector.first_frame.can_id,
+        vector.first_frame.payload,
+        is_extended_id=vector.first_frame.is_extended_id,
+    )
+
+    assert decoded.fields.source == 65
+    assert decoded.can_fields.sender == 1
+    assert decoded.fields.source != decoded.can_fields.sender
+
+
+@pytest.mark.parametrize(
+    ("vector_name", "expected_flags"),
+    [
+        ("flag_crc32", CSP_FLAG_CRC32),
+        ("flag_hmac", CSP_FLAG_HMAC),
+    ],
+)
+def test_flag_vectors_decode_the_expected_single_flag_bit(
+    golden_vectors: tuple[GoldenVector, ...],
+    vector_name: str,
+    expected_flags: int,
+) -> None:
+    vector = _get_vector(golden_vectors, vector_name)
+    decoded = unpack(
+        vector.first_frame.can_id,
+        vector.first_frame.payload,
+        is_extended_id=vector.first_frame.is_extended_id,
+    )
+
+    assert decoded.fields.flags == expected_flags
 
 
 def _get_vector(vectors: tuple[GoldenVector, ...], name: str) -> GoldenVector:
