@@ -23,10 +23,6 @@ dependencies = [
     "pydantic>=2.8",
     "PyYAML>=6.0",
     "python-can>=4.4",
-    # Phase 3 (Mission Control API, see docs/roadmap.md) is not implemented
-    # yet; uncomment once src/cubesat_testbed actually depends on them.
-    # "fastapi>=0.115",
-    # "uvicorn>=0.30",
 ]
 
 [project.urls]

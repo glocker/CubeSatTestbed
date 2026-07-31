@@ -223,9 +223,7 @@ Full detail, constraints, and what's deliberately out of scope for v1:
 ## Stack
 
 Python `>=3.11`, Pydantic, PyYAML, python-can, `uv` for dependency/environment
-management, pytest + ruff + mypy for development. FastAPI/Uvicorn will be
-added once the Mission Control API phase lands (see
-[`docs/roadmap.md`](docs/roadmap.md)); they are not a v1 dependency.
+management, pytest + ruff + mypy for development.
 
 ## License
 
