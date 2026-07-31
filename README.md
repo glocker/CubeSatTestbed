@@ -53,9 +53,151 @@ uv run cubesat-testbed run \
 ```
 
 ```text
-PASS t=3000000 assert_3: payload.telemetry.power_status == 'offline'; actual='offline'
-SUMMARY scenario='EPS Low Battery Protection Test' assertions=1 passed=1 failed=0 started_at=0 finished_at=3000000
+PASS t=4000000 assert_3: payload.telemetry.power_status == 'offline'; actual='offline'
+SUMMARY scenario='EPS Low Battery Protection Test' assertions=1 passed=1 failed=0 started_at=0 finished_at=4000000
 ```
+
+## Walkthrough: your first scenario
+
+Same run as Quickstart above, but step by step — what each config field means and
+how to read the result.
+
+**1. The CubeSat setup (`configs/default_satellite.toml`)**
+
+Three nodes:
+
+```toml
+[nodes.obc]
+mode = "simulated"
+module_type = "obc_peer"
+address = 1
+
+[nodes.eps]
+mode = "simulated"
+module_type = "generic_eps"
+address = 2
+
+[nodes.payload]
+mode = "simulated"
+module_type = "simple_payload"
+address = 3
+```
+
+- `mode = "simulated"` — this node runs entirely inside the testbed. Switch to
+  `"hardware"` later to point the same setup at a real board over SocketCAN —
+  no code changes.
+- `address` — the node's CSP address on the bus.
+
+The behavior under test lives here:
+
+```toml
+[nodes.eps.telemetry.battery_percent]
+offset = 0
+length = 4
+type = "float"
+...
+
+[nodes.obc.rules.low_battery_shed_payload]
+signal = "eps.telemetry.battery_percent"
+op = "<"
+threshold = 30.0
+for = "3s"
+
+[[nodes.obc.rules.low_battery_shed_payload.actions]]
+type = "send_command"
+command = "payload_power_off"
+```
+
+EPS reports `battery_percent` as a 4-byte float, encoded onto the bus like a real
+telemetry frame, not just held in memory. OBC has one rule: if battery stays below
+30% for 3 virtual seconds, send `payload_power_off`.
+
+**2. The scenario (`configs/scenarios/low_battery.yaml`)**
+
+```yaml
+steps:
+  - action: "inject_fault"
+    type: "state_override"
+    target: "eps.model.battery_percent"
+    value: 25
+    duration: "5s"
+
+  - action: "wait"
+    virtual_time: "3s"
+
+  - action: "assert"
+    signal: "payload.telemetry.power_status"
+    op: "=="
+    value: "offline"
+    timeout: "1s"
+```
+
+1. `inject_fault` — force EPS's battery to 25% for 5 virtual seconds (bypasses the
+   discharge model to test the *reaction*, not the physics).
+2. `wait` — advance virtual time 3s, giving the rule's `for = "3s"` window a
+   chance to elapse.
+3. `assert` — check `payload.telemetry.power_status == "offline"`, retried
+   against incoming telemetry for up to 1s.
+
+**3. Run it**
+
+```sh
+uv run cubesat-testbed run \
+  --config configs/default_satellite.toml \
+  --scenario configs/scenarios/low_battery.yaml
+```
+
+```text
+PASS t=4000000 assert_3: payload.telemetry.power_status == 'offline'; actual='offline'
+SUMMARY scenario='EPS Low Battery Protection Test' assertions=1 passed=1 failed=0 started_at=0 finished_at=4000000
+```
+
+**4. Reading it**
+
+- `t=4000000` — virtual microseconds (4s), not 3,000,000: telemetry is only
+  re-encoded once per physical step, so the earliest honest chance to see
+  "offline" is the beacon *after* the command actually lands. That one-step
+  delay is expected, not a bug.
+- `assert_3` — auto-generated name (3rd, unnamed step); add `name:` to a step
+  for a readable label.
+- `passed=1 failed=0` and exit code `0` — wire straight into CI.
+
+**5. When it fails**
+
+Drop the `inject_fault` step (battery never actually drops) and rerun:
+
+```text
+FAIL t=4000000 assert_2: payload.telemetry.power_status == 'offline'; actual='online'
+```
+
+Exit code `1`. `actual='online'` is the real, decoded-from-the-bus value — not a
+guess.
+
+**6. Machine-readable output**
+
+```sh
+uv run cubesat-testbed run --config ... --scenario ... --json --quiet
+```
+
+```json
+{
+  "scenario": "EPS Low Battery Protection Test",
+  "passed": true,
+  "exit_code": 0,
+  "assertions": {
+    "total": 1, "passed": 1, "failed": 0,
+    "results": [{
+      "name": "assert_3",
+      "signal": "payload.telemetry.power_status",
+      "expected": "offline", "actual": "offline",
+      "passed": true, "evaluated_at": 4000000
+    }]
+  }
+}
+```
+
+Or `--junit-xml PATH` for CI dashboards. Full config syntax:
+[`configs/schema/module_schema.md`](configs/schema/module_schema.md).
 
 ## v1 scope at a glance
 
