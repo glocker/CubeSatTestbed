@@ -5,12 +5,18 @@ from pathlib import Path
 
 import pytest
 
-from cubesat_testbed.config import load_scenario, load_testbed_config, parse_scenario
+from cubesat_testbed.config import (
+    load_scenario,
+    load_testbed_config,
+    parse_scenario,
+    parse_testbed_config,
+)
 from cubesat_testbed.protocol.csp_v2 import CspFields, pack
 from cubesat_testbed.scenario import (
     ScenarioRunner,
     ScenarioRuntimeError,
     build_in_memory_runtime,
+    build_obc_rules_from_file,
     run_scenario,
 )
 
@@ -58,7 +64,6 @@ def test_send_command_step_updates_simulated_module_through_in_memory_bus() -> N
         scenario,
         setup,
         output=output,
-        install_default_obc_rules=False,
     )
 
     assert result.passed
@@ -89,7 +94,6 @@ def test_assert_step_waits_until_timeout_and_reports_fail_deterministically() ->
         scenario,
         setup,
         output=output,
-        install_default_obc_rules=False,
     )
 
     assert not result.passed
@@ -130,3 +134,112 @@ def test_wait_raises_instead_of_silently_returning_early_when_budget_exhausted()
 
     with pytest.raises(ScenarioRuntimeError, match="max_settle_events=2"):
         runner.wait(3_600 * 1_000_000)
+
+
+def test_inline_setup_rule_sheds_payload_on_low_battery() -> None:
+    setup = load_testbed_config(Path("configs/default_satellite.toml"))
+    scenario = parse_scenario(
+        """
+        name: Inline rule smoke
+        steps:
+          - action: inject_fault
+            type: state_override
+            target: eps.model.battery_percent
+            value: 25
+            duration: "5s"
+          - action: wait
+            virtual_time: "3s"
+          - action: assert
+            signal: payload.telemetry.power_status
+            op: "=="
+            value: offline
+            timeout: "1s"
+        """,
+        setup=setup,
+    )
+
+    result = run_scenario(scenario, setup)
+
+    assert result.passed
+
+
+def test_obc_rules_file_overrides_the_setup_s_inline_rule(tmp_path: Path) -> None:
+    setup = load_testbed_config(Path("configs/default_satellite.toml"))
+    scenario = parse_scenario(
+        """
+        name: Rules-file override smoke
+        steps:
+          - action: inject_fault
+            type: state_override
+            target: eps.model.battery_percent
+            value: 25
+            duration: "5s"
+          - action: wait
+            virtual_time: "3s"
+          - action: assert
+            signal: payload.telemetry.power_status
+            op: "=="
+            value: offline
+            timeout: "1s"
+        """,
+        setup=setup,
+    )
+    rules_path = tmp_path / "rules.toml"
+    rules_path.write_text(
+        """
+        [obc.never_fires]
+        signal = "eps.telemetry.battery_percent"
+        op = "<"
+        threshold = 1.0
+
+        [[obc.never_fires.actions]]
+        type = "send_command"
+        command = "payload_power_off"
+        """,
+        encoding="utf-8",
+    )
+
+    obc_rules = build_obc_rules_from_file(rules_path)
+    result = run_scenario(scenario, setup, obc_rules=obc_rules)
+
+    # The override rule's threshold (1.0) never matches battery_percent=25, so
+    # the setup's own inline low_battery_shed_payload rule must not have run.
+    assert not result.passed
+    assert result.assertions[0].actual == "online"
+
+
+def test_setup_without_inline_rules_installs_no_obc_rules() -> None:
+    setup = parse_testbed_config(
+        """
+        [transport]
+        type = "in-memory"
+
+        [nodes.obc]
+        mode = "simulated"
+        module_type = "obc_peer"
+        address = 1
+
+        [nodes.eps]
+        mode = "simulated"
+        module_type = "generic_eps"
+        address = 2
+
+        [nodes.payload]
+        mode = "simulated"
+        module_type = "simple_payload"
+        address = 3
+
+        [nodes.obc.commands.payload_power_off]
+        target = "payload"
+        destination_port = 10
+        source_port = 10
+
+        [nodes.eps.telemetry.battery_percent]
+        source_port = 20
+        destination_port = 20
+        """
+    )
+
+    runtime = build_in_memory_runtime(setup)
+
+    assert runtime.module("obc").config.rules == ()

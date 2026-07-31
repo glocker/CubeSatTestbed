@@ -84,6 +84,36 @@ def test_cli_run_json_outputs_result_and_overrides_quiet(
     }
 
 
+def test_cli_run_rules_flag_overrides_the_setup_s_inline_rule(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rules_path = tmp_path / "rules.toml"
+    rules_path.write_text(
+        """
+        [obc.never_fires]
+        signal = "eps.telemetry.battery_percent"
+        op = "<"
+        threshold = 1.0
+
+        [[obc.never_fires.actions]]
+        type = "send_command"
+        command = "payload_power_off"
+        """,
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        ["run", "-c", DEFAULT_CONFIG, "-s", LOW_BATTERY_SCENARIO, "--rules", str(rules_path)]
+    )
+
+    # The override rule's threshold (1.0) never matches, so the setup's own
+    # inline low_battery_shed_payload rule must not have run: payload stays on.
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "actual='online'" in captured.out
+
+
 def test_cli_run_returns_one_for_failing_assertion(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

@@ -34,3 +34,13 @@ destination_port = 20
 units = "percent"
 min = 0
 max = 100
+
+[nodes.obc.rules.low_battery_shed_payload]
+signal = "eps.telemetry.battery_percent"
+op = "<"
+threshold = 30.0
+for = "3s"
+
+[[nodes.obc.rules.low_battery_shed_payload.actions]]
+type = "send_command"
+command = "payload_power_off"

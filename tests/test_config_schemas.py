@@ -143,6 +143,151 @@ def test_setup_rejects_telemetry_signal_mapped_to_wrong_node() -> None:
         )
 
 
+def test_setup_accepts_an_obc_rule_with_a_command_action() -> None:
+    setup = parse_testbed_config(
+        """
+        [transport]
+        type = "in-memory"
+
+        [nodes.obc]
+        mode = "simulated"
+        module_type = "obc_peer"
+        address = 1
+
+        [nodes.payload]
+        mode = "simulated"
+        module_type = "simple_payload"
+        address = 3
+
+        [nodes.obc.commands.payload_power_off]
+        target = "payload"
+        destination_port = 10
+        source_port = 10
+
+        [nodes.obc.rules.low_battery_shed_payload]
+        signal = "eps.telemetry.battery_percent"
+        op = "<"
+        threshold = 30.0
+        for = "3s"
+        cooldown = "10s"
+
+        [[nodes.obc.rules.low_battery_shed_payload.actions]]
+        type = "send_command"
+        command = "payload_power_off"
+        """
+    )
+
+    rule = setup.nodes["obc"].rules["low_battery_shed_payload"]
+    assert rule.signal == "eps.telemetry.battery_percent"
+    assert rule.op == "<"
+    assert rule.threshold == 30.0
+    assert rule.for_duration == 3_000_000
+    assert rule.cooldown == 10_000_000
+    assert len(rule.actions) == 1
+
+
+def test_setup_accepts_an_obc_rule_with_a_fault_action() -> None:
+    setup = parse_testbed_config(
+        """
+        [transport]
+        type = "in-memory"
+
+        [nodes.obc]
+        mode = "simulated"
+        module_type = "obc_peer"
+        address = 1
+
+        [nodes.obc.rules.overheat_degrade_battery]
+        signal = "eps.telemetry.temperature_c"
+        op = ">"
+        threshold = 55.0
+        for = "2s"
+
+        [[nodes.obc.rules.overheat_degrade_battery.actions]]
+        type = "inject_fault"
+        fault_type = "named_fault"
+        target = "eps.battery_cell_dead"
+        """
+    )
+
+    action = setup.nodes["obc"].rules["overheat_degrade_battery"].actions[0]
+    assert action.type == "inject_fault"
+    assert action.target == "eps.battery_cell_dead"
+
+
+def test_setup_rejects_rules_for_non_obc_peer_module_type() -> None:
+    with pytest.raises(ValidationError, match="rules is only valid for module_type = 'obc_peer'"):
+        parse_testbed_config(
+            """
+            [transport]
+            type = "in-memory"
+
+            [nodes.eps]
+            mode = "simulated"
+            module_type = "generic_eps"
+            address = 2
+
+            [nodes.eps.rules.bogus]
+            signal = "eps.telemetry.battery_percent"
+            op = "<"
+            threshold = 30.0
+
+            [[nodes.eps.rules.bogus.actions]]
+            type = "send_command"
+            command = "whatever"
+            """
+        )
+
+
+def test_setup_rejects_rule_with_no_actions() -> None:
+    with pytest.raises(ValidationError):
+        parse_testbed_config(
+            """
+            [transport]
+            type = "in-memory"
+
+            [nodes.obc]
+            mode = "simulated"
+            module_type = "obc_peer"
+            address = 1
+
+            [nodes.obc.rules.empty]
+            signal = "eps.telemetry.battery_percent"
+            op = "<"
+            threshold = 30.0
+            actions = []
+            """
+        )
+
+
+def test_setup_rejects_named_fault_rule_action_with_duration() -> None:
+    with pytest.raises(
+        ValidationError, match="named_fault requests do not support duration or cycles"
+    ):
+        parse_testbed_config(
+            """
+            [transport]
+            type = "in-memory"
+
+            [nodes.obc]
+            mode = "simulated"
+            module_type = "obc_peer"
+            address = 1
+
+            [nodes.obc.rules.bad]
+            signal = "eps.telemetry.battery_percent"
+            op = "<"
+            threshold = 30.0
+
+            [[nodes.obc.rules.bad.actions]]
+            type = "inject_fault"
+            fault_type = "named_fault"
+            target = "eps.battery_cell_dead"
+            duration = "5s"
+            """
+        )
+
+
 def test_setup_rejects_oversize_single_frame_command_payload() -> None:
     with pytest.raises(ValidationError, match="single-frame CSP payload"):
         parse_testbed_config(
