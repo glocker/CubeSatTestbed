@@ -6,10 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning will follow [Semantic Versioning](https://semver.org/) once the
 first tag is cut.
 
-## [Unreleased]
+## [1.0.0] - 2026-07-31
 
-Product v1 is not tagged yet. Everything below has landed on `main` but is
-still pre-release.
+First versioned release. Everything below has landed on `main` and is
+included in v1.
 
 ### Added
 

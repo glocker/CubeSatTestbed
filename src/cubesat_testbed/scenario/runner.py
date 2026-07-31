@@ -23,7 +23,6 @@ from cubesat_testbed.config import (
     InjectFaultStep,
     InMemoryTransportConfig,
     ModuleType,
-    NodeMode,
     ObcRule,
     ObcRuleCommandAction,
     ObcRuleFaultAction,

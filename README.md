@@ -2,6 +2,8 @@
 
 A modular CubeSat subsystem emulation and hardware-in-the-loop test framework.
 
+![Project scheme](https://raw.githubusercontent.com/glocker/CubeSatTestbed/main/docs/images/scheme.png)
+
 **Status:** pre-v1, under active development. See
 [`docs/roadmap.md`](docs/roadmap.md) for what's implemented.
 
@@ -78,9 +80,10 @@ Full detail, constraints, and what's deliberately out of scope for v1:
 
 ## Stack
 
-Python `>=3.11`, Pydantic, PyYAML, python-can, FastAPI/Uvicorn (later API
-phase), `uv` for dependency/environment management, pytest + ruff + mypy for
-development.
+Python `>=3.11`, Pydantic, PyYAML, python-can, `uv` for dependency/environment
+management, pytest + ruff + mypy for development. FastAPI/Uvicorn will be
+added once the Mission Control API phase lands (see
+[`docs/roadmap.md`](docs/roadmap.md)); they are not a v1 dependency.
 
 ## License
 
