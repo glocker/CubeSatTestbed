@@ -6,6 +6,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning will follow [Semantic Versioning](https://semver.org/) once the
 first tag is cut.
 
+## [Unreleased]
+
+### Added
+
+- `cubesat-testbed run --realtime`: runs the scenario on a `RealTimeClock`
+  instead of the default `VirtualClock`, pacing virtual time against
+  wall-clock time so a real `software`/`hardware` peer gets a window to
+  answer. Hardware-in-the-loop runs no longer require Python glue -- a
+  `socketcan` setup config plus this flag is the whole path. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#hardware-in-the-loop-from-the-cli).
+- A `stderr` warning when the setup config declares a `socketcan` transport
+  but `--realtime` was not passed: the run would otherwise jump straight
+  through virtual time and never hear a real peer. It stays a warning, not an
+  error, because a SocketCAN setup whose nodes are all `simulated` runs
+  correctly unpaced.
+- `tests/test_hil_demo.py` now drives `configs/examples/socketcan_hil.toml`
+  end to end through the CLI itself, with an external peer answering on
+  `vcan0` in real time, and pins the unpaced run's miss-plus-warning
+  behaviour alongside it.
+
+### Fixed
+
+- `run_scenario`/`run_scenario_files` now close the transport they built when
+  the scenario ends -- pass, fail or raise -- so a HIL run hands its CAN
+  socket back instead of leaking it. `TransportAdapter.close()` is part of the
+  transport interface, defaulting to a no-op for in-process adapters.
+
 ## [1.0.0] - 2026-07-31
 
 First versioned release. Everything below has landed on `main` and is

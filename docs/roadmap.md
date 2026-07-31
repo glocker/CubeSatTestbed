@@ -40,12 +40,10 @@ by reading its source and its wire-level output, and they already own real
 hardware and real buses. The items below are ordered by how directly they
 unblock that user, highest first.
 
-1. [ ] **HIL runs from the CLI.** The CLI never passes a clock to the scenario
-       runner, so it always uses the virtual clock. A setup config declaring the
-       SocketCAN transport is accepted, but virtual time jumps straight through
-       and a real peer never gets wall-clock time to answer — so HIL currently
-       works only from the Python API with `clock=RealTimeClock()`. Add a
-       `--realtime` flag, and warn when SocketCAN is configured without it.
+1. [x] **HIL runs from the CLI.** `run --realtime` paces the run on a
+       `RealTimeClock`, so a real peer gets wall-clock time to answer; a
+       SocketCAN transport configured without the flag warns on `stderr`.
+       Covered end to end against `vcan0` under the `socketcan` pytest marker.
 2. [ ] **Wire-level frame trace.** Add `--trace`, writing decoded frames to
        stderr: virtual timestamp, direction, CSP header fields, raw payload
        bytes, and the signals decoded from them. Composes with
