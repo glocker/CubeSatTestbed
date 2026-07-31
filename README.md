@@ -2,6 +2,8 @@
 
 A modular CubeSat subsystem emulation and hardware-in-the-loop test framework.
 
+![Project scheme](https://raw.githubusercontent.com/glocker/CubeSatTestbed/main/docs/images/scheme.png)
+
 **Status:** pre-v1, under active development. See
 [`docs/roadmap.md`](docs/roadmap.md) for what's implemented.
 
