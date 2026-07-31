@@ -1,12 +1,20 @@
 """In-memory CSP bus adapter for deterministic tests and CI.
 
-This adapter does not require Linux SocketCAN, root privileges, background
-threads, wall-clock sleeps, or polling loops. Delivery is synchronous: a call to
-``send`` immediately appends the frame to deterministic in-process queues.
+This adapter does not require Linux SocketCAN, root privileges, or background
+threads. Delivery is synchronous: a call to ``send`` immediately appends the
+frame to deterministic in-process queues. Nothing here ever produces a frame
+asynchronously (there is no separate thread or process that could), so a
+``receive(timeout=...)`` call with an empty queue only ever sleeps out the
+full timeout before giving up -- but doing so is still correct and meaningful:
+it is what makes ``RealTimeClock``-paced real-time waits (see
+``cubesat_testbed.clock``) behave the same way against this adapter as they
+would against a real bus with no traffic, letting a scenario's real-time
+pacing be rehearsed without CAN hardware.
 """
 
 from __future__ import annotations
 
+import time
 from collections import deque
 from collections.abc import Iterable
 
@@ -92,13 +100,31 @@ class InMemoryBusAdapter(TransportAdapter):
 
         return envelope
 
-    def receive(self, *, endpoint: EndpointId | None = None) -> TransportEnvelope | None:
-        """Return the next queued frame for a stream, or ``None`` when empty."""
+    def receive(
+        self,
+        *,
+        endpoint: EndpointId | None = None,
+        timeout: float | None = None,
+    ) -> TransportEnvelope | None:
+        """Return the next queued frame for a stream, or ``None`` when empty.
+
+        A non-empty queue always returns immediately, matching a real bus
+        that already has a frame buffered. An empty queue with a positive
+        ``timeout`` sleeps out the full timeout before returning ``None``:
+        nothing can add to this adapter's queues from outside the call that's
+        currently blocked (there is no producer thread), so re-checking
+        early would never find anything -- but a caller pacing real-time
+        waits against a :class:`~cubesat_testbed.clock.RealTimeClock` still
+        needs that wall-clock time to genuinely pass, the same as it would
+        waiting on a real, silent bus.
+        """
 
         queue = self._queue_for(endpoint)
-        if not queue:
-            return None
-        return queue.popleft()
+        if queue:
+            return queue.popleft()
+        if timeout is not None and timeout > 0:
+            time.sleep(timeout)
+        return None
 
     def pending_count(self, *, endpoint: EndpointId | None = None) -> int:
         """Return the number of frames currently queued for a stream."""

@@ -10,10 +10,11 @@ from __future__ import annotations
 import sys
 import warnings
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, TextIO, TypeVar, runtime_checkable
 
+from cubesat_testbed.clock import Clock, VirtualClock
 from cubesat_testbed.config import (
     AssertionOperator,
     AssertStep,
@@ -21,7 +22,6 @@ from cubesat_testbed.config import (
     InjectFaultStep,
     InMemoryTransportConfig,
     ModuleType,
-    NodeMode,
     ScenarioScript,
     SendCommandStep,
     TelemetryMapping,
@@ -30,6 +30,7 @@ from cubesat_testbed.config import (
     load_scenario,
     load_testbed_config,
 )
+from cubesat_testbed.dut.manager import NodeParticipant, resolve_participants
 from cubesat_testbed.engine import (
     CommandPayload,
     DiscreteEventEngine,
@@ -60,7 +61,12 @@ from cubesat_testbed.scenario.assertions import (
     TelemetryAssertion,
     format_assertion_result,
 )
-from cubesat_testbed.transport import EndpointId, InMemoryBusAdapter, TransportEnvelope
+from cubesat_testbed.transport import (
+    EndpointId,
+    TransportAdapter,
+    TransportEnvelope,
+    build_transport_adapter,
+)
 
 _ModuleT = TypeVar("_ModuleT", bound=SimulatedModule)
 
@@ -151,12 +157,23 @@ class _TelemetryRoute:
 
 @dataclass(slots=True)
 class ScenarioRuntime:
-    """Runtime objects required to execute an in-memory scenario."""
+    """Runtime objects required to execute a scenario.
+
+    ``transport`` is any :class:`TransportAdapter` -- the in-memory bus for
+    CI/local simulation, or :class:`~cubesat_testbed.transport.SocketCanAdapter`
+    for a HIL run against ``software``/``hardware`` DUT nodes; the runner does
+    not care which. ``participants`` is the DUT manager's mapping of every
+    configured node to its role; ``modules`` only ever holds entries for
+    ``participant.is_simulated`` nodes. ``clock`` paces ``wait()`` against
+    wall-clock time when set to a :class:`~cubesat_testbed.clock.RealTimeClock`
+    (the default :class:`~cubesat_testbed.clock.VirtualClock` never waits).
+    """
 
     setup: TestbedConfig
     engine: DiscreteEventEngine
     fault_engine: FaultInjectionEngine
-    transport: InMemoryBusAdapter
+    transport: TransportAdapter
+    participants: dict[str, NodeParticipant]
     modules: dict[str, SimulatedModule]
     command_routes: tuple[_CommandRoute, ...]
     telemetry_routes: tuple[_TelemetryRoute, ...]
@@ -164,6 +181,7 @@ class ScenarioRuntime:
     telemetry_fields_by_node: dict[str, tuple[str, ...]]
     telemetry_order: tuple[str, ...]
     tick_order: tuple[str, ...]
+    clock: Clock = field(default_factory=VirtualClock)
 
     def module(self, name: str) -> SimulatedModule:
         """Return a configured simulated module by node name."""
@@ -248,6 +266,13 @@ class ScenarioRunner:
         runner instance, see ``_arm_physical_step``) ticks modules, advances the
         fault-injection cycle counter, and emits telemetry as this call jumps
         the engine forward; this method itself does not loop tick-by-tick.
+
+        With the default :class:`~cubesat_testbed.clock.VirtualClock`, the
+        engine jumps straight to ``target`` (pure simulation). With a
+        :class:`~cubesat_testbed.clock.RealTimeClock`, this instead paces the
+        jump against wall-clock time, giving a real ``software``/``hardware``
+        peer a realistic window to respond and delivering its frames as soon
+        as they arrive rather than only once ``target`` is reached.
         """
 
         delay = _validate_virtual_time("wait virtual_time", virtual_time)
@@ -257,14 +282,44 @@ class ScenarioRunner:
             return
 
         target = self.runtime.engine.now + delay
-        self.runtime.engine.run_until(target, max_events=self._max_settle_events)
-        if self.runtime.engine.now < target:
-            raise ScenarioRuntimeError(
-                f"wait exceeded max_settle_events={self._max_settle_events} before reaching "
-                f"virtual time {target}; pass a larger max_settle_events to ScenarioRunner "
-                "for long waits"
-            )
+        if isinstance(self.runtime.clock, VirtualClock):
+            self.runtime.engine.run_until(target, max_events=self._max_settle_events)
+            if self.runtime.engine.now < target:
+                raise ScenarioRuntimeError(
+                    f"wait exceeded max_settle_events={self._max_settle_events} before reaching "
+                    f"virtual time {target}; pass a larger max_settle_events to ScenarioRunner "
+                    "for long waits"
+                )
+        else:
+            self._wait_paced(target)
         self._run_current_events()
+
+    def _wait_paced(self, target: VirtualTime) -> None:
+        """Advance to ``target``, blocking on the transport for early frames.
+
+        Each iteration either delivers one arrived frame (virtual time does
+        not advance -- it has not yet been decided that no earlier response
+        was coming) or, once the transport's blocking receive times out,
+        jumps to the next due virtual instant (safe, since wall-clock time
+        has by then actually caught up to it) and repeats.
+        """
+
+        for _round in range(self._max_settle_events):
+            if self.runtime.engine.now >= target:
+                return
+            next_event_time = self.runtime.engine.next_event_time
+            next_stop = target if next_event_time is None else min(next_event_time, target)
+            remaining = self.runtime.clock.seconds_until(next_stop)
+            envelope = self.runtime.transport.receive(timeout=remaining)
+            if envelope is not None:
+                self._deliver_transport_envelope(envelope)
+                continue
+            self.runtime.engine.run_until(next_stop, max_events=self._max_settle_events)
+        raise ScenarioRuntimeError(
+            f"real-time wait did not reach virtual time {target} within "
+            f"max_settle_events={self._max_settle_events} rounds; check for a peer "
+            "flooding the bus faster than the wait can advance"
+        )
 
     def inject_fault(self, step: InjectFaultStep) -> None:
         """Apply one scenario fault request through the DES fault path."""
@@ -604,32 +659,48 @@ class ScenarioRunner:
         return False, None
 
 
-def build_in_memory_runtime(
+def build_runtime(
     setup: TestbedConfig,
     *,
     obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None = None,
     install_default_obc_rules: bool = True,
+    clock: Clock | None = None,
 ) -> ScenarioRuntime:
-    """Build an in-memory runtime from a validated setup config.
+    """Build a runtime from a validated setup config.
+
+    Works with either ``transport.type``: the in-memory bus for CI/local
+    simulation, or SocketCAN for a HIL run against ``software``/``hardware``
+    DUT nodes -- switching which node is real is a config change
+    (``mode``/``transport.type`` in setup TOML), not a code change. Which
+    nodes get a locally simulated module is decided once by
+    :func:`cubesat_testbed.dut.manager.resolve_participants`, not re-derived
+    here.
 
     The default OBC rules mirror the repository's example low-battery scenario:
     when an OBC node has a configured ``payload_power_off`` command and EPS battery
     telemetry is mapped, it sheds payload after three virtual ticks below 30%.
     Pass ``obc_rules`` to provide explicit rules for a given OBC node instead.
-    """
 
-    if not isinstance(setup.transport, InMemoryTransportConfig):
-        raise ScenarioRuntimeError("scenario runner v1 supports setup transport.type='in-memory'")
+    ``clock`` defaults to :class:`~cubesat_testbed.clock.VirtualClock`
+    (pure simulation, ``wait()`` never blocks). Pass a
+    :class:`~cubesat_testbed.clock.RealTimeClock` to pace ``wait()`` against
+    wall-clock time for a HIL run, so a real ``software``/``hardware`` peer
+    gets a realistic window to respond instead of the run blasting through
+    virtual time instantly.
+    """
 
     engine = DiscreteEventEngine()
     fault_engine = FaultInjectionEngine(engine)
-    transport = InMemoryBusAdapter(endpoints=(node.address for node in setup.nodes.values()))
+    transport = build_transport_adapter(
+        setup.transport, endpoints=(node.address for node in setup.nodes.values())
+    )
     command_routes = _build_command_routes(setup)
+    participants = resolve_participants(setup)
 
     modules: dict[str, SimulatedModule] = {}
 
     for node_name, node in setup.nodes.items():
-        if node.module_type is ModuleType.SIMPLE_PAYLOAD:
+        if participants[node_name].is_simulated and node.module_type is ModuleType.SIMPLE_PAYLOAD:
             modules[node_name] = SimplePayloadModule(
                 SimplePayloadConfig(name=node_name, endpoint=node.address),
                 fault_engine=fault_engine,
@@ -637,7 +708,7 @@ def build_in_memory_runtime(
 
     first_payload = _first_module_of_type(modules, SimplePayloadModule)
     for node_name, node in setup.nodes.items():
-        if node.module_type is ModuleType.GENERIC_EPS:
+        if participants[node_name].is_simulated and node.module_type is ModuleType.GENERIC_EPS:
             modules[node_name] = GenericEpsModule(
                 GenericEpsConfig(name=node_name, endpoint=node.address),
                 payload=first_payload,
@@ -645,7 +716,7 @@ def build_in_memory_runtime(
             )
 
     for node_name, node in setup.nodes.items():
-        if node.module_type is ModuleType.OBC_PEER:
+        if participants[node_name].is_simulated and node.module_type is ModuleType.OBC_PEER:
             rules = _rules_for_obc_node(
                 setup,
                 node_name,
@@ -662,10 +733,8 @@ def build_in_memory_runtime(
             obc.attach(engine)
             modules[node_name] = obc
 
-    for node_name, node in setup.nodes.items():
-        if node.mode is not NodeMode.SIMULATED:
-            continue
-        if node_name not in modules:
+    for node_name, participant in participants.items():
+        if participant.is_simulated and node_name not in modules:
             raise ScenarioRuntimeError(f"simulated node {node_name!r} has no runtime module")
 
     telemetry_routes = _build_telemetry_routes(setup)
@@ -678,6 +747,7 @@ def build_in_memory_runtime(
         engine=engine,
         fault_engine=fault_engine,
         transport=transport,
+        participants=participants,
         modules=modules,
         command_routes=command_routes,
         telemetry_routes=telemetry_routes,
@@ -685,6 +755,30 @@ def build_in_memory_runtime(
         telemetry_fields_by_node=telemetry_fields_by_node,
         telemetry_order=telemetry_order,
         tick_order=tick_order,
+        clock=VirtualClock() if clock is None else clock,
+    )
+
+
+def build_in_memory_runtime(
+    setup: TestbedConfig,
+    *,
+    obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None = None,
+    install_default_obc_rules: bool = True,
+) -> ScenarioRuntime:
+    """Build an in-memory runtime from a validated setup config.
+
+    A thin, backward-compatible wrapper around :func:`build_runtime` that
+    keeps rejecting non-in-memory transports, for callers that specifically
+    want the CI/local-simulation guarantee (no real bus, no wall-clock
+    pacing) rather than "whatever the config says".
+    """
+
+    if not isinstance(setup.transport, InMemoryTransportConfig):
+        raise ScenarioRuntimeError("scenario runner v1 supports setup transport.type='in-memory'")
+    return build_runtime(
+        setup,
+        obc_rules=obc_rules,
+        install_default_obc_rules=install_default_obc_rules,
     )
 
 
@@ -695,13 +789,15 @@ def run_scenario(
     output: TextIO | None = None,
     obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None = None,
     install_default_obc_rules: bool = True,
+    clock: Clock | None = None,
 ) -> ScenarioRunResult:
-    """Build an in-memory runtime and execute a parsed scenario."""
+    """Build a runtime (in-memory or SocketCAN, per setup) and run a scenario."""
 
-    runtime = build_in_memory_runtime(
+    runtime = build_runtime(
         setup,
         obc_rules=obc_rules,
         install_default_obc_rules=install_default_obc_rules,
+        clock=clock,
     )
     return ScenarioRunner(runtime, output=output).run(scenario)
 
@@ -713,6 +809,7 @@ def run_scenario_files(
     output: TextIO | None = None,
     obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None = None,
     install_default_obc_rules: bool = True,
+    clock: Clock | None = None,
 ) -> ScenarioRunResult:
     """Load setup/scenario files, validate references, and execute them."""
 
@@ -724,6 +821,7 @@ def run_scenario_files(
         output=output,
         obc_rules=obc_rules,
         install_default_obc_rules=install_default_obc_rules,
+        clock=clock,
     )
 
 
@@ -892,6 +990,7 @@ __all__ = [
     "ScenarioRuntime",
     "ScenarioRuntimeError",
     "build_in_memory_runtime",
+    "build_runtime",
     "run_scenario",
     "run_scenario_files",
 ]

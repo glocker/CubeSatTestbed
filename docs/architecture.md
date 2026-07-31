@@ -8,11 +8,12 @@ lives under `src/cubesat_testbed`.
 ```text
 src/cubesat_testbed/
   engine.py               # Discrete-event simulation dispatcher
+  clock.py                # VirtualClock / RealTimeClock: paces wait() for HIL
   fault_injection.py      # Passive fault executor
   config/parser.py        # TOML setup + YAML scenario parsing
   scenario/runner.py      # Scenario orchestration over virtual time
   scenario/assertions.py  # PASS/FAIL assertion primitives
-  dut/manager.py          # Node mode orchestration
+  dut/manager.py          # Node mode -> DUT participant resolution
   protocol/csp_v2.py      # libcsp-compatible CSP v2 codec
   protocol/signal_codec.py    # Byte-aligned scalar signal codec
   protocol/telemetry_codec.py # Bridges TelemetryMapping config to signal_codec
@@ -31,16 +32,28 @@ src/cubesat_testbed/
 1. **DES engine** (`cubesat_testbed.engine`)
    - Owns virtual time and event ordering.
    - Dispatches timer, bus, telemetry, command, scenario and fault events.
-   - Does not use wall-clock `sleep()` as the model update mechanism.
+   - Does not use wall-clock `sleep()` as the model update mechanism; virtual
+     time always jumps directly to the next scheduled event.
 
 2. **DUT/node manager** (`cubesat_testbed.dut.manager`)
-   - Tracks node modes: `simulated`, `software`, `hardware`.
-   - Connects each node to the selected protocol and transport adapter.
-   - Keeps DUT selection as configuration, not code.
+   - `resolve_participants(setup)` maps every configured node to one
+     `NodeParticipant`: `simulated`, `software`, or `hardware`. This is the
+     single place that decision is made; `build_runtime` (below) does not
+     re-derive it from scattered `node.mode`/`node.module_type` checks.
+   - Switching which node is real is a config change (`mode` in setup TOML),
+     not a code change.
+   - `software`/`hardware` participants are never simulated locally; they are
+     reached and observed purely as CSP-over-CAN traffic on whatever
+     transport the setup configures.
 
 3. **Protocol and transport adapters**
    - Protocol: v1 ships CSP v2 only.
-   - Transport: v1 ships `InMemoryBusAdapter` and `SocketCanAdapter`.
+   - Transport: v1 ships `InMemoryBusAdapter` and `SocketCanAdapter`, built
+     from setup config by `transport.factory.build_transport_adapter`.
+   - `receive(timeout=...)` lets a caller block up to `timeout` real seconds
+     for a frame, returning as soon as one arrives rather than only once the
+     full timeout elapses; the in-memory adapter has no producer to wait for,
+     so it sleeps out the full timeout on an empty queue.
    - Higher layers work with decoded packets/events instead of hardcoding CAN
      details.
 
@@ -50,7 +63,15 @@ src/cubesat_testbed/
    - They do not run independent polling loops.
 
 5. **Scenario runner** (`cubesat_testbed.scenario`)
+   - `build_runtime` builds a runtime from any setup config, in-memory or
+     SocketCAN, using the DUT manager to decide which nodes get a locally
+     simulated module (`build_in_memory_runtime` is a thin backward-compatible
+     wrapper that still rejects non-in-memory transports).
    - Executes YAML scenarios against the configured nodes.
+   - With the default `VirtualClock`, `wait()` jumps straight to its target
+     virtual time. Passed a `RealTimeClock`, `wait()` instead paces that jump
+     against wall-clock time, delivering frames from a real
+     `software`/`hardware` peer as soon as they arrive.
    - Emits deterministic PASS/FAIL assertion results.
 
 6. **Fault Injection Engine** (`cubesat_testbed.fault_injection`)

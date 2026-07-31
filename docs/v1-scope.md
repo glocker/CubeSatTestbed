@@ -228,6 +228,44 @@ CUBESAT_TESTBED_SOCKETCAN_INTERFACE=vcan0 uv run pytest -m socketcan
 
 Hardware traffic record/replay is out of v1 scope.
 
+### DUT selection and HIL
+
+`cubesat_testbed.dut.manager.resolve_participants(setup)` maps every node to
+its DUT role (`simulated`, `software`, `hardware`) from `mode` in setup
+config; this is the only place that decision is made. `build_runtime` (used
+by `run_scenario`/`run_scenario_files`; `build_in_memory_runtime` is a thin
+backward-compatible wrapper that still rejects non-in-memory transports)
+builds a runtime from either transport type, giving a locally simulated
+module only to `simulated` nodes. A `software`/`hardware` node is never
+simulated: it is reached and observed purely as CSP-over-CAN traffic on the
+transport, whether that traffic comes from a real board, a real process on
+`vcan0`, or a scenario test manually placing frames on the in-memory bus.
+
+By default, `wait()` uses `cubesat_testbed.clock.VirtualClock` and jumps
+straight to its target virtual time, exactly as before. Passing
+`clock=RealTimeClock()` to `run_scenario`/`run_scenario_files`/`build_runtime`
+instead paces that jump against wall-clock time: `wait()` blocks on the
+transport's `receive(timeout=...)` for whatever real time remains before the
+next due virtual instant, delivering any frame that arrives as soon as it
+does rather than only once the full window elapses. This is what lets a HIL
+run give a real `software`/`hardware` peer a realistic window to respond
+instead of the engine blasting straight through virtual time. `RealTimeClock`
+also works against the in-memory bus (there is nothing to wait *for*, so it
+sleeps out the requested time), which is a convenient way to rehearse a
+scenario's real-time pacing without CAN hardware.
+
+Validating this against real hardware is out of v1 scope (no board is needed
+to ship v1: `SocketCanAdapter` does not distinguish `vcan0` from a physical
+interface, so the same code path applies to both). What v1 *does* validate is
+interop with real, official libcsp traffic on a real (virtual) bus:
+`tests/test_hil_demo.py` (run with
+`CUBESAT_TESTBED_SOCKETCAN_INTERFACE=vcan0 uv run pytest -m socketcan`)
+replays the project's committed golden-vector ping — the exact bytes official
+libcsp v2.1 puts on the wire — over `vcan0` and confirms `build_runtime`'s
+`SocketCanAdapter` receives and decodes it, and that a command frame arriving
+the same way reaches and mutates the correct simulated module through the
+full scenario runner delivery path.
+
 ## Running scenarios from CLI
 
 ```sh

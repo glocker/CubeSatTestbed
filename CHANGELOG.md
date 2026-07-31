@@ -57,3 +57,31 @@ still pre-release.
   window (like a real bus listener that simply hasn't seen a frame yet),
   rather than an immediate error; it only becomes a failed assertion, with an
   explicit "was never observed" detail, once the timeout is reached.
+- `build_runtime` (a new, more general sibling of `build_in_memory_runtime`,
+  which stays as a thin backward-compatible in-memory-only wrapper) builds a
+  scenario runtime from either transport type, not just in-memory: which
+  nodes get a locally simulated module now comes from the new
+  `cubesat_testbed.dut.manager.resolve_participants`, the single place that
+  decision is made, instead of scattered inline `node.mode`/`node.module_type`
+  checks.
+- `TransportAdapter.receive()` accepts an optional `timeout` (real seconds) to
+  block for an incoming frame instead of only ever polling once;
+  `SocketCanAdapter` passes it through to `python-can`'s own blocking
+  `recv(timeout=...)`, and `InMemoryBusAdapter` sleeps out the full timeout on
+  an empty queue (there is no producer to wait for, but the wall-clock time
+  still needs to genuinely pass for real-time pacing to work when rehearsed
+  against the in-memory bus).
+- New `cubesat_testbed.clock`: `VirtualClock` (default; `wait()` jumps
+  straight to its target virtual time, as always) and `RealTimeClock` (paces
+  `wait()` against wall-clock time, so a HIL run against a real
+  `software`/`hardware` peer gets a realistic window to respond instead of
+  the run blasting through virtual time instantly). Pass `clock=` to
+  `run_scenario`/`run_scenario_files`/`build_runtime`. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#dut-selection-and-hil).
+- `tests/test_hil_demo.py`: an end-to-end demo (run with
+  `CUBESAT_TESTBED_SOCKETCAN_INTERFACE=vcan0 uv run pytest -m socketcan`)
+  replaying the project's committed golden-vector ping over `vcan0` and
+  confirming `build_runtime`'s `SocketCanAdapter` receives and decodes real
+  libcsp-produced bytes, and that a command frame arriving the same way
+  reaches and mutates the correct simulated module through the full scenario
+  runner delivery path -- no physical board required.

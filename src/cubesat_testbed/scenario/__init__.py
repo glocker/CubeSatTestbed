@@ -14,6 +14,7 @@ from cubesat_testbed.scenario.runner import (
     ScenarioRuntime,
     ScenarioRuntimeError,
     build_in_memory_runtime,
+    build_runtime,
     run_scenario,
     run_scenario_files,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "ScenarioRuntimeError",
     "TelemetryAssertion",
     "build_in_memory_runtime",
+    "build_runtime",
     "compare_values",
     "format_assertion_result",
     "run_scenario",
