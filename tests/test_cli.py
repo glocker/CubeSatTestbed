@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from xml.etree import ElementTree
 
 import pytest
 
@@ -226,3 +227,115 @@ def test_cli_run_json_returns_130_for_keyboard_interrupt(
         "exit_code": 130,
         "passed": False,
     }
+
+
+def test_cli_run_junit_xml_reports_one_testcase_per_assertion(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report_path = tmp_path / "report.xml"
+
+    exit_code = main(
+        ["run", "-c", DEFAULT_CONFIG, "-s", LOW_BATTERY_SCENARIO, "--junit-xml", str(report_path)]
+    )
+
+    assert exit_code == 0
+    root = ElementTree.fromstring(report_path.read_text(encoding="utf-8"))
+    testsuite = root.find("testsuite")
+    assert testsuite is not None
+    assert testsuite.get("name") == "EPS Low Battery Protection Test"
+    assert testsuite.get("tests") == "1"
+    assert testsuite.get("failures") == "0"
+    testcase = testsuite.find("testcase")
+    assert testcase is not None
+    assert testcase.get("name") == "assert_3"
+    assert testcase.find("failure") is None
+
+
+def test_cli_run_junit_xml_reports_a_failure_element_for_a_failed_assertion(
+    tmp_path: Path,
+) -> None:
+    scenario_path = tmp_path / "failing_assertion.yaml"
+    scenario_path.write_text(
+        """
+name: Battery should not be critical
+steps:
+  - action: assert
+    name: critical_battery
+    signal: eps.telemetry.battery_percent
+    op: <
+    value: 10
+    timeout: "2s"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "report.xml"
+
+    exit_code = main(
+        ["run", "-c", DEFAULT_CONFIG, "-s", str(scenario_path), "--junit-xml", str(report_path)]
+    )
+
+    assert exit_code == 1
+    root = ElementTree.fromstring(report_path.read_text(encoding="utf-8"))
+    testsuite = root.find("testsuite")
+    assert testsuite is not None
+    assert testsuite.get("failures") == "1"
+    testcase = testsuite.find("testcase")
+    assert testcase is not None
+    failure = testcase.find("failure")
+    assert failure is not None
+    assert "eps.telemetry.battery_percent < 10" in (failure.get("message") or "")
+
+
+def test_cli_run_junit_xml_reports_an_error_element_for_missing_config(tmp_path: Path) -> None:
+    missing_config_path = tmp_path / "missing.toml"
+    report_path = tmp_path / "report.xml"
+
+    exit_code = main(
+        [
+            "run",
+            "-c",
+            str(missing_config_path),
+            "-s",
+            LOW_BATTERY_SCENARIO,
+            "--junit-xml",
+            str(report_path),
+        ]
+    )
+
+    assert exit_code == 2
+    root = ElementTree.fromstring(report_path.read_text(encoding="utf-8"))
+    testsuite = root.find("testsuite")
+    assert testsuite is not None
+    assert testsuite.get("errors") == "1"
+    testcase = testsuite.find("testcase")
+    assert testcase is not None
+    error = testcase.find("error")
+    assert error is not None
+    assert "missing.toml" in (error.get("message") or "")
+
+
+def test_cli_run_junit_xml_reports_interrupted_on_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("cubesat_testbed.main.run_scenario_files", _raise_keyboard_interrupt)
+    report_path = tmp_path / "report.xml"
+
+    exit_code = main(
+        [
+            "run",
+            "-c",
+            DEFAULT_CONFIG,
+            "-s",
+            LOW_BATTERY_SCENARIO,
+            "--junit-xml",
+            str(report_path),
+        ]
+    )
+
+    assert exit_code == 130
+    root = ElementTree.fromstring(report_path.read_text(encoding="utf-8"))
+    testsuite = root.find("testsuite")
+    assert testsuite is not None
+    assert testsuite.get("errors") == "1"

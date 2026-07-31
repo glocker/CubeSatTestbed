@@ -27,3 +27,7 @@ still pre-release.
 - Scenario runner with deterministic PASS/FAIL assertions.
 - `cubesat-testbed run` CLI with `--json`, `--quiet`, and CI-friendly exit
   codes.
+- `--junit-xml PATH` CLI flag: writes a JUnit XML report (one `<testcase>`
+  per assertion, `<failure>`/`<error>` elements as appropriate) so CI systems
+  render PASS/FAIL natively without a custom parser. Execution errors and
+  interrupts still produce a report instead of leaving no file.

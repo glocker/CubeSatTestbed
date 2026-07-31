@@ -14,6 +14,8 @@ from cubesat_testbed.scenario.runner import (
     ScenarioRuntime,
     ScenarioRuntimeError,
     build_in_memory_runtime,
+    format_junit_error_xml,
+    format_junit_xml,
     run_scenario,
     run_scenario_files,
 )
@@ -30,6 +32,8 @@ __all__ = [
     "build_in_memory_runtime",
     "compare_values",
     "format_assertion_result",
+    "format_junit_error_xml",
+    "format_junit_xml",
     "run_scenario",
     "run_scenario_files",
 ]

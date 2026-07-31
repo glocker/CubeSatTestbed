@@ -6,11 +6,17 @@ import argparse
 import io
 import json
 import sys
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import cast
 
-from cubesat_testbed.scenario import ScenarioRunResult, run_scenario_files
+from cubesat_testbed.scenario import (
+    ScenarioRunResult,
+    format_junit_error_xml,
+    format_junit_xml,
+    run_scenario_files,
+)
 from cubesat_testbed.scenario.assertions import AssertionResult
 
 _EXIT_SUCCESS = 0
@@ -62,6 +68,13 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="emit a machine-readable JSON result to stdout; takes precedence over --quiet",
     )
+    run_parser.add_argument(
+        "--junit-xml",
+        type=Path,
+        metavar="PATH",
+        default=None,
+        help="write a JUnit XML report to PATH, one testcase per assertion",
+    )
     run_parser.set_defaults(handler=_run_command)
 
     return parser
@@ -71,6 +84,7 @@ def _run_command(args: argparse.Namespace) -> int:
     suppress_assertion_output = bool(args.quiet or args.json)
     output = io.StringIO() if suppress_assertion_output else None
 
+    started = time.perf_counter()
     try:
         result = run_scenario_files(
             args.config,
@@ -80,6 +94,10 @@ def _run_command(args: argparse.Namespace) -> int:
         )
     except Exception as exc:  # noqa: BLE001
         # CLI contract: execution errors map to 2; assertion failures map to 1 via result.passed.
+        if args.junit_xml is not None:
+            _write_junit_error_xml(
+                args.junit_xml, str(exc), kind="execution_error", started=started
+            )
         _print_error(
             str(exc),
             json_output=args.json,
@@ -87,6 +105,12 @@ def _run_command(args: argparse.Namespace) -> int:
             kind="execution_error",
         )
         return _EXIT_EXECUTION_ERROR
+
+    if args.junit_xml is not None:
+        elapsed = time.perf_counter() - started
+        args.junit_xml.write_text(
+            format_junit_xml(result, wall_time_seconds=elapsed), encoding="utf-8"
+        )
 
     if not result.assertions:
         print("warning: 0 assertions in scenario", file=sys.stderr)
@@ -97,6 +121,14 @@ def _run_command(args: argparse.Namespace) -> int:
     elif not args.quiet:
         _print_summary(result)
     return exit_code
+
+
+def _write_junit_error_xml(path: Path, message: str, *, kind: str, started: float) -> None:
+    elapsed = time.perf_counter() - started
+    path.write_text(
+        format_junit_error_xml(message, kind=kind, wall_time_seconds=elapsed),
+        encoding="utf-8",
+    )
 
 
 def _exit_code_for_result(result: ScenarioRunResult) -> int:
@@ -178,12 +210,17 @@ def _argv_requests_json(argv: Sequence[str] | None) -> bool:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     json_output = _argv_requests_json(argv)
+    args: argparse.Namespace | None = None
+    started = time.perf_counter()
     try:
         args = parser.parse_args(argv)
         json_output = bool(getattr(args, "json", json_output))
         handler = cast("Callable[[argparse.Namespace], int]", args.handler)
         return handler(args)
     except KeyboardInterrupt:
+        junit_xml = getattr(args, "junit_xml", None)
+        if junit_xml is not None:
+            _write_junit_error_xml(junit_xml, "interrupted", kind="interrupted", started=started)
         if json_output:
             _print_json(
                 _error_payload(

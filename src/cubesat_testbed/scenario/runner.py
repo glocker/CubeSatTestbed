@@ -12,6 +12,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TextIO, TypeVar, runtime_checkable
+from xml.etree.ElementTree import Element, SubElement, tostring
 
 from cubesat_testbed.config import (
     AssertStep,
@@ -151,6 +152,77 @@ class ScenarioRunResult:
         """Return whether every scenario assertion passed."""
 
         return all(result.passed for result in self.assertions)
+
+
+def format_junit_xml(result: ScenarioRunResult, *, wall_time_seconds: float = 0.0) -> str:
+    """Format one scenario result as a JUnit XML report, one testcase per assertion.
+
+    ``time`` attributes report real wall-clock seconds the run took to
+    execute, not virtual time: the scenario's own virtual-time timestamps are
+    already in each testcase's failure detail, and JUnit consumers (CI
+    dashboards, flake trackers) expect ``time`` to mean elapsed real time.
+    """
+
+    failed = sum(1 for assertion in result.assertions if not assertion.passed)
+    testsuites = Element("testsuites")
+    testsuite = SubElement(
+        testsuites,
+        "testsuite",
+        {
+            "name": result.scenario_name,
+            "tests": str(len(result.assertions)),
+            "failures": str(failed),
+            "errors": "0",
+            "skipped": "0",
+            "time": f"{wall_time_seconds:.6f}",
+        },
+    )
+    for assertion in result.assertions:
+        testcase = SubElement(
+            testsuite,
+            "testcase",
+            {"name": assertion.name, "classname": result.scenario_name, "time": "0"},
+        )
+        if not assertion.passed:
+            failure = SubElement(testcase, "failure", {"message": assertion.detail})
+            failure.text = assertion.detail
+    return _serialize_junit_xml(testsuites)
+
+
+def format_junit_error_xml(
+    message: str,
+    *,
+    kind: str,
+    wall_time_seconds: float = 0.0,
+) -> str:
+    """Format an execution error (no scenario result) as a JUnit XML report.
+
+    CI tooling that expects a JUnit file at a fixed path should still get one
+    when the scenario never ran at all (bad config, missing file, and so on),
+    rather than a missing-file failure on top of the real error.
+    """
+
+    testsuites = Element("testsuites")
+    testsuite = SubElement(
+        testsuites,
+        "testsuite",
+        {
+            "name": kind,
+            "tests": "1",
+            "failures": "0",
+            "errors": "1",
+            "skipped": "0",
+            "time": f"{wall_time_seconds:.6f}",
+        },
+    )
+    testcase = SubElement(testsuite, "testcase", {"name": kind, "classname": kind, "time": "0"})
+    error = SubElement(testcase, "error", {"message": message})
+    error.text = message
+    return _serialize_junit_xml(testsuites)
+
+
+def _serialize_junit_xml(testsuites: Element) -> str:
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(testsuites, encoding="unicode")
 
 
 class ScenarioRunner:
@@ -684,6 +756,8 @@ __all__ = [
     "ScenarioRuntime",
     "ScenarioRuntimeError",
     "build_in_memory_runtime",
+    "format_junit_error_xml",
+    "format_junit_xml",
     "run_scenario",
     "run_scenario_files",
 ]
