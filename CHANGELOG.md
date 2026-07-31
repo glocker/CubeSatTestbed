@@ -43,3 +43,17 @@ still pre-release.
 - A received CSP frame with no configured route is now a `RuntimeWarning` and
   is dropped, not a scenario-ending error — real CAN buses routinely carry
   frames the testbed does not own.
+- **Breaking:** telemetry mappings (`[nodes.<node>.telemetry.<name>]`) now
+  require a byte-aligned wire layout (`offset`, `length`, `type`; optional
+  `endian`/`scale`/`offset_value`/`enum`). Configured telemetry is encoded
+  through `cubesat_testbed.protocol.signal_codec` into its own single-frame
+  CSP payload and sent on the bus every physical step; assertions and the OBC
+  rule engine only ever observe telemetry by decoding that frame back, the
+  same path a real bus listener or hardware peer would use. Assertions no
+  longer fall back to reading a module's Python state directly. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#telemetry-wire-encoding).
+- A telemetry signal that has not yet been observed on the bus is treated as
+  a retryable "not matching yet" condition within an assertion's timeout
+  window (like a real bus listener that simply hasn't seen a frame yet),
+  rather than an immediate error; it only becomes a failed assertion, with an
+  explicit "was never observed" detail, once the timeout is reached.

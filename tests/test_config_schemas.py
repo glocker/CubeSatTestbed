@@ -139,6 +139,107 @@ def test_setup_rejects_telemetry_signal_mapped_to_wrong_node() -> None:
             signal = "payload.telemetry.power_status"
             source_port = 20
             destination_port = 20
+            offset = 0
+            length = 4
+            type = "float"
+            """
+        )
+
+
+def test_setup_rejects_invalid_telemetry_wire_layout() -> None:
+    with pytest.raises(ValidationError, match="invalid telemetry wire layout"):
+        parse_testbed_config(
+            """
+            [transport]
+            type = "in-memory"
+
+            [nodes.eps]
+            mode = "simulated"
+            module_type = "generic_eps"
+            address = 2
+
+            [nodes.eps.telemetry.battery_percent]
+            source_port = 20
+            destination_port = 20
+            offset = 0
+            length = 3
+            type = "float"
+            """
+        )
+
+
+def test_setup_rejects_enum_on_a_float_telemetry_field() -> None:
+    with pytest.raises(ValidationError, match="enum is only valid for 'uint'/'int'"):
+        parse_testbed_config(
+            """
+            [transport]
+            type = "in-memory"
+
+            [nodes.eps]
+            mode = "simulated"
+            module_type = "generic_eps"
+            address = 2
+
+            [nodes.eps.telemetry.battery_percent]
+            source_port = 20
+            destination_port = 20
+            offset = 0
+            length = 4
+            type = "float"
+
+            [nodes.eps.telemetry.battery_percent.enum]
+            0 = "empty"
+            """
+        )
+
+
+def test_setup_rejects_duplicate_enum_labels() -> None:
+    with pytest.raises(ValidationError, match="mapped by more than one raw value"):
+        parse_testbed_config(
+            """
+            [transport]
+            type = "in-memory"
+
+            [nodes.payload]
+            mode = "simulated"
+            module_type = "simple_payload"
+            address = 3
+
+            [nodes.payload.telemetry.power_status]
+            source_port = 21
+            destination_port = 21
+            offset = 0
+            length = 1
+            type = "uint"
+
+            [nodes.payload.telemetry.power_status.enum]
+            0 = "offline"
+            1 = "offline"
+            """
+        )
+
+
+def test_setup_rejects_non_integer_enum_key() -> None:
+    with pytest.raises(ValidationError, match="must be an integer raw value"):
+        parse_testbed_config(
+            """
+            [transport]
+            type = "in-memory"
+
+            [nodes.payload]
+            mode = "simulated"
+            module_type = "simple_payload"
+            address = 3
+
+            [nodes.payload.telemetry.power_status]
+            source_port = 21
+            destination_port = 21
+            offset = 0
+            length = 1
+            type = "uint"
+
+            [nodes.payload.telemetry.power_status.enum]
+            offline = "offline"
             """
         )
 

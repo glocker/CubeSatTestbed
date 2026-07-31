@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Protocol, TextIO, TypeVar, runtime_checkable
 
 from cubesat_testbed.config import (
+    AssertionOperator,
     AssertStep,
     FaultType,
     InjectFaultStep,
@@ -23,6 +24,7 @@ from cubesat_testbed.config import (
     NodeMode,
     ScenarioScript,
     SendCommandStep,
+    TelemetryMapping,
     TestbedConfig,
     WaitStep,
     load_scenario,
@@ -52,6 +54,7 @@ from cubesat_testbed.modules import (
     ThresholdOperator,
 )
 from cubesat_testbed.protocol.csp_v2 import CspFields, DecodedCspPacket, decode_frame, pack
+from cubesat_testbed.protocol.telemetry_codec import decode_telemetry_value, encode_telemetry_value
 from cubesat_testbed.scenario.assertions import (
     AssertionResult,
     TelemetryAssertion,
@@ -123,6 +126,29 @@ class _CommandRoute:
     payload_hex: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class _TelemetryRoute:
+    """CSP routing plus wire-codec metadata for one configured telemetry signal.
+
+    Telemetry frames are self-addressed (``destination_address ==
+    source_address``): v1 has no dedicated telemetry-sink node, and the
+    in-memory bus's monitor queue already sees every frame regardless of its
+    destination, matching a promiscuous CAN bus analyzer rather than one more
+    addressed endpoint.
+    """
+
+    signal: str
+    node_name: str
+    field_name: str
+    source_address: int
+    destination_address: int
+    destination_port: int
+    source_port: int
+    priority: int
+    flags: int
+    mapping: TelemetryMapping
+
+
 @dataclass(slots=True)
 class ScenarioRuntime:
     """Runtime objects required to execute an in-memory scenario."""
@@ -133,6 +159,8 @@ class ScenarioRuntime:
     transport: InMemoryBusAdapter
     modules: dict[str, SimulatedModule]
     command_routes: tuple[_CommandRoute, ...]
+    telemetry_routes: tuple[_TelemetryRoute, ...]
+    telemetry_routes_by_signal: dict[str, _TelemetryRoute]
     telemetry_fields_by_node: dict[str, tuple[str, ...]]
     telemetry_order: tuple[str, ...]
     tick_order: tuple[str, ...]
@@ -236,7 +264,7 @@ class ScenarioRunner:
                 f"virtual time {target}; pass a larger max_settle_events to ScenarioRunner "
                 "for long waits"
             )
-        self._drain_transport_commands()
+        self._run_current_events()
 
     def inject_fault(self, step: InjectFaultStep) -> None:
         """Apply one scenario fault request through the DES fault path."""
@@ -274,7 +302,15 @@ class ScenarioRunner:
         self._emit_configured_telemetry()
 
     def assert_step(self, step: AssertStep, *, index: int) -> AssertionResult:
-        """Evaluate a scenario assertion, optionally waiting until its timeout."""
+        """Evaluate a scenario assertion, optionally waiting until its timeout.
+
+        A signal that has not been observed on the bus yet is not an error: it
+        is treated like any other not-yet-matching value and re-checked as the
+        engine advances, exactly like a real bus listener that simply hasn't
+        seen a frame yet. Only if the signal is still unobserved once the
+        deadline is reached does the assertion fail, with a detail message
+        that says so explicitly rather than comparing against a made-up value.
+        """
 
         assertion = TelemetryAssertion(
             _assertion_name(step, index=index),
@@ -286,11 +322,22 @@ class ScenarioRunner:
         deadline = self.runtime.engine.now + (assertion.timeout or 0)
 
         while True:
-            result = assertion.evaluate(
-                self._read_signal(assertion.signal),
-                now=self.runtime.engine.now,
-            )
-            if result.passed or self.runtime.engine.now >= deadline:
+            observed, actual = self._try_read_signal(assertion.signal)
+            if observed:
+                result = assertion.evaluate(actual, now=self.runtime.engine.now)
+                if result.passed or self.runtime.engine.now >= deadline:
+                    break
+            elif self.runtime.engine.now >= deadline:
+                result = AssertionResult(
+                    name=assertion.name,
+                    signal=assertion.signal,
+                    operator=AssertionOperator(assertion.operator),
+                    expected=assertion.expected,
+                    actual=None,
+                    passed=False,
+                    evaluated_at=self.runtime.engine.now,
+                    detail=f"{assertion.signal} was never observed on the bus",
+                )
                 break
             # Jump straight to whichever comes first: the next scheduled event
             # (e.g. the next physical-step tick) or the assertion's own
@@ -321,7 +368,7 @@ class ScenarioRunner:
         """
 
         def _on_step(_event: SimulationEvent, engine: DiscreteEventEngine) -> None:
-            self._drain_transport_commands()
+            self._run_current_events()
             self.runtime.fault_engine.advance_cycles(1, now=engine.now)
             self._tick_modules(1)
             self._emit_configured_telemetry()
@@ -336,20 +383,46 @@ class ScenarioRunner:
                 module.tick(ticks)
 
     def _emit_configured_telemetry(self) -> None:
+        """Encode and send each configured node's current telemetry as a real
+        CSP frame, then let it round-trip back through the same decode path a
+        bus listener (or hardware) would use, rather than pushing Python
+        values straight into the observable telemetry cache.
+        """
+
         for node_name in self.runtime.telemetry_order:
+            if node_name not in self.runtime.modules:
+                continue  # hardware/software node telemetry is observed from the bus, not self-generated
             module = self.runtime.module(node_name)
             if not isinstance(module, _TelemetryEmitterModule):
                 continue
-            fields = self.runtime.telemetry_fields_by_node[node_name]
-            module.emit_telemetry(self.runtime.engine, names=fields)
-            self._run_current_events()
+            values = module.telemetry(now=self.runtime.engine.now)
+            for field_name in self.runtime.telemetry_fields_by_node[node_name]:
+                signal = f"{node_name}.telemetry.{field_name}"
+                route = self.runtime.telemetry_routes_by_signal[signal]
+                self._send_telemetry_route(route, values[field_name])
+        self._run_current_events()
 
     def _run_current_events(self) -> None:
-        self.runtime.engine.run_until(
-            self.runtime.engine.now,
-            max_events=self._max_settle_events,
+        """Dispatch same-tick engine events and drain the bus to a fixed point.
+
+        Draining the bus can schedule new same-tick engine events (e.g.
+        decoded telemetry), and dispatching those can put new envelopes on the
+        bus (e.g. an OBC rule reacting to telemetry by sending a command); this
+        alternates both steps until neither produces anything new.
+        """
+
+        for _round in range(self._max_settle_events):
+            dispatched = self.runtime.engine.run_until(
+                self.runtime.engine.now,
+                max_events=self._max_settle_events,
+            )
+            drained_any = self._drain_transport_frames()
+            if not dispatched and not drained_any:
+                return
+        raise ScenarioRuntimeError(
+            f"same-tick event/bus activity did not settle within "
+            f"max_settle_events={self._max_settle_events} rounds; check for a feedback loop"
         )
-        self._drain_transport_commands()
 
     def _send_route(self, route: _CommandRoute, *, payload: object) -> TransportEnvelope:
         frame = pack(
@@ -368,15 +441,58 @@ class ScenarioRunner:
             self._semantic_payloads_by_envelope[envelope.sequence] = payload
         return envelope
 
-    def _drain_transport_commands(self) -> None:
+    def _send_telemetry_route(self, route: _TelemetryRoute, value: object) -> TransportEnvelope:
+        payload = encode_telemetry_value(route.field_name, route.mapping, value)
+        frame = pack(
+            CspFields(
+                priority=route.priority,
+                source=route.source_address,
+                destination=route.destination_address,
+                destination_port=route.destination_port,
+                source_port=route.source_port,
+                flags=route.flags,
+            ),
+            payload,
+        )
+        return self.runtime.transport.send(frame, source=route.source_address)
+
+    def _drain_transport_frames(self) -> bool:
+        """Deliver every currently queued bus frame; return whether any were."""
+
+        delivered_any = False
         for envelope in self.runtime.transport.drain():
             self._deliver_transport_envelope(envelope)
+            delivered_any = True
+        return delivered_any
 
     def _deliver_transport_envelope(self, envelope: TransportEnvelope) -> None:
         packet = decode_frame(envelope.frame)
-        route = self._route_for_packet(packet)
-        if route is None:
+
+        command_route = self._command_route_for_packet(packet)
+        if command_route is not None:
+            self._deliver_command(command_route, packet, envelope)
             return
+
+        telemetry_route = self._telemetry_route_for_packet(packet)
+        if telemetry_route is not None:
+            self._deliver_telemetry(telemetry_route, packet)
+            return
+
+        fields = packet.fields
+        warnings.warn(
+            "received CSP frame with no configured route, ignoring it: "
+            f"src={fields.source} dst={fields.destination} "
+            f"dport={fields.destination_port} sport={fields.source_port}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    def _deliver_command(
+        self,
+        route: _CommandRoute,
+        packet: DecodedCspPacket,
+        envelope: TransportEnvelope,
+    ) -> None:
         module = self.runtime.module(route.target_node)
         if not isinstance(module, _CommandHandlingModule):
             raise ScenarioRuntimeError(f"module {route.target_node!r} cannot handle commands")
@@ -397,6 +513,10 @@ class ScenarioRunner:
             raise ScenarioRuntimeError(
                 f"command {route.source_node}.{route.command} was not handled by {route.target_node}"
             )
+
+    def _deliver_telemetry(self, route: _TelemetryRoute, packet: DecodedCspPacket) -> None:
+        value = decode_telemetry_value(route.field_name, route.mapping, packet.payload)
+        self.runtime.engine.schedule_telemetry(route.signal, value, source=route.node_name)
 
     def _resolve_command_route(self, step: SendCommandStep) -> _CommandRoute:
         candidates = [
@@ -420,14 +540,13 @@ class ScenarioRunner:
             )
         return candidates[0]
 
-    def _route_for_packet(self, packet: DecodedCspPacket) -> _CommandRoute | None:
-        """Resolve the configured route for an inbound CSP frame, if any.
+    def _command_route_for_packet(self, packet: DecodedCspPacket) -> _CommandRoute | None:
+        """Resolve the configured command route for an inbound CSP frame, if any.
 
-        A frame with no configured route is treated as foreign bus traffic, not
-        a scenario error: real CAN buses routinely carry frames the testbed
-        does not own. Such frames are warned about and dropped rather than
-        aborting the run. An ambiguous match (multiple configured routes) is
-        still a configuration bug and remains a hard error.
+        Returns ``None`` rather than raising when nothing matches: the caller
+        also tries telemetry routes before deciding a frame is truly
+        unroutable. An ambiguous match (multiple configured routes) is a
+        configuration bug and remains a hard error.
         """
 
         fields = packet.fields
@@ -445,32 +564,44 @@ class ScenarioRunner:
         if not exact_payload and len(candidates) == 1:
             return candidates[0]
         if not candidates:
-            warnings.warn(
-                "received CSP frame with no configured route, ignoring it: "
-                f"src={fields.source} dst={fields.destination} "
-                f"dport={fields.destination_port} sport={fields.source_port}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
             return None
         raise ScenarioRuntimeError("received CSP command frame matches multiple configured routes")
 
-    def _read_signal(self, signal: str) -> object:
-        node_name, field_name = _split_telemetry_signal(signal)
-        if node_name in self.runtime.modules:
-            module = self.runtime.module(node_name)
-            if isinstance(module, _TelemetryEmitterModule):
-                telemetry = module.telemetry(now=self.runtime.engine.now)
-                try:
-                    return telemetry[field_name]
-                except KeyError:
-                    pass
-        try:
-            return self._latest_telemetry[signal]
-        except KeyError as exc:
-            raise ScenarioRuntimeError(
-                f"telemetry signal {signal!r} has not been observed"
-            ) from exc
+    def _telemetry_route_for_packet(self, packet: DecodedCspPacket) -> _TelemetryRoute | None:
+        """Resolve the configured telemetry route for an inbound CSP frame, if any."""
+
+        fields = packet.fields
+        candidates = [
+            route
+            for route in self.runtime.telemetry_routes
+            if route.source_address == fields.source
+            and route.destination_address == fields.destination
+            and route.destination_port == fields.destination_port
+            and route.source_port == fields.source_port
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
+        if not candidates:
+            return None
+        raise ScenarioRuntimeError(
+            "received CSP telemetry frame matches multiple configured routes"
+        )
+
+    def _try_read_signal(self, signal: str) -> tuple[bool, object]:
+        """Return ``(True, value)`` if ``signal`` has been decoded off the bus.
+
+        This deliberately does not fall back to reading the source module's
+        Python state directly: an assertion must observe the same bytes a
+        real bus listener would decode, not the simulation checked against
+        itself. Returns ``(False, None)`` rather than raising when unobserved,
+        since "no frame yet" is a normal, retryable condition within an
+        assertion's timeout window, not a scenario error.
+        """
+
+        _split_telemetry_signal(signal)  # validates '<node>.telemetry.<field>' form
+        if signal in self._latest_telemetry:
+            return True, self._latest_telemetry[signal]
+        return False, None
 
 
 def build_in_memory_runtime(
@@ -537,7 +668,9 @@ def build_in_memory_runtime(
         if node_name not in modules:
             raise ScenarioRuntimeError(f"simulated node {node_name!r} has no runtime module")
 
-    telemetry_fields_by_node, telemetry_order = _build_telemetry_plan(setup)
+    telemetry_routes = _build_telemetry_routes(setup)
+    telemetry_routes_by_signal = {route.signal: route for route in telemetry_routes}
+    telemetry_fields_by_node, telemetry_order = _telemetry_plan_from_routes(telemetry_routes)
     tick_order = _build_tick_order(setup, modules)
 
     return ScenarioRuntime(
@@ -547,6 +680,8 @@ def build_in_memory_runtime(
         transport=transport,
         modules=modules,
         command_routes=command_routes,
+        telemetry_routes=telemetry_routes,
+        telemetry_routes_by_signal=telemetry_routes_by_signal,
         telemetry_fields_by_node=telemetry_fields_by_node,
         telemetry_order=telemetry_order,
         tick_order=tick_order,
@@ -614,13 +749,9 @@ def _build_command_routes(setup: TestbedConfig) -> tuple[_CommandRoute, ...]:
     return tuple(routes)
 
 
-def _build_telemetry_plan(
-    setup: TestbedConfig,
-) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
-    fields_by_node: dict[str, tuple[str, ...]] = {}
-    order: list[str] = []
+def _build_telemetry_routes(setup: TestbedConfig) -> tuple[_TelemetryRoute, ...]:
+    routes: list[_TelemetryRoute] = []
     for node_name, node in setup.nodes.items():
-        fields: list[str] = []
         for telemetry_name, mapping in node.telemetry.items():
             signal = mapping.resolved_signal(node_name, telemetry_name)
             signal_node, field_name = _split_telemetry_signal(signal)
@@ -628,11 +759,34 @@ def _build_telemetry_plan(
                 raise ScenarioRuntimeError(
                     f"telemetry signal {signal!r} does not belong to node {node_name!r}"
                 )
-            fields.append(field_name)
-        if fields:
-            fields_by_node[node_name] = tuple(fields)
-            order.append(node_name)
-    return fields_by_node, tuple(order)
+            routes.append(
+                _TelemetryRoute(
+                    signal=signal,
+                    node_name=node_name,
+                    field_name=field_name,
+                    source_address=node.address,
+                    destination_address=node.address,
+                    destination_port=mapping.destination_port,
+                    source_port=mapping.source_port,
+                    priority=mapping.priority,
+                    flags=mapping.flags,
+                    mapping=mapping,
+                )
+            )
+    return tuple(routes)
+
+
+def _telemetry_plan_from_routes(
+    routes: tuple[_TelemetryRoute, ...],
+) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
+    fields_by_node: dict[str, list[str]] = {}
+    order: list[str] = []
+    for route in routes:
+        if route.node_name not in fields_by_node:
+            fields_by_node[route.node_name] = []
+            order.append(route.node_name)
+        fields_by_node[route.node_name].append(route.field_name)
+    return {node: tuple(fields) for node, fields in fields_by_node.items()}, tuple(order)
 
 
 def _build_tick_order(

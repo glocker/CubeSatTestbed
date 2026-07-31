@@ -133,11 +133,62 @@ per node.
 
 ## Signal codec v1
 
-The v1 binary signal codec is intentionally small: byte offsets only, no
-bit-level packing, `big`/`little` endianness, scalar signed/unsigned integers
-and IEEE 754 floats, `scale`/`offset` conversion, and optional passive
-metadata (`units`, `min`, `max`). No arrays, enums, Motorola/Intel bit
-numbering, or custom field plugins in v1.
+The v1 binary signal codec (`cubesat_testbed.protocol.signal_codec`) is
+intentionally small: byte offsets only, no bit-level packing, `big`/`little`
+endianness, scalar signed/unsigned integers and IEEE 754 floats, `scale`/
+`offset` conversion, and optional passive metadata (`units`, `min`, `max`). No
+arrays, bit-level enums, Motorola/Intel bit numbering, or custom field plugins
+in v1.
+
+## Telemetry wire encoding
+
+Every configured telemetry signal requires a byte-aligned wire layout
+(`offset`, `length`, `type`, and optionally `endian`/`scale`/`offset_value`) —
+see [`configs/schema/module_schema.md`](../configs/schema/module_schema.md)
+for the field reference. A simulated module's telemetry is encoded through
+that layout into its own single-frame CSP payload and sent on the bus every
+physical step; the scenario runner (and any assertion) only ever observes
+telemetry by decoding that same frame back, the same path a real bus listener
+or hardware peer would use. There is no path that lets an assertion read a
+module's Python state directly.
+
+Two consequences worth knowing:
+
+- A value that does not fit its declared layout (wrong magnitude, a scale
+  that does not divide it exactly for an integer field, and so on) fails with
+  a clear error instead of silently truncating. Continuously-varying physical
+  values (like a battery percentage) should generally use `type = "float"`
+  rather than a scaled integer, since integer+scale fields require the
+  physical value to map to an *exact* raw integer.
+- Because a signal is only observed once its frame has actually been sent and
+  decoded, a value change that happens as a *reaction* to telemetry (e.g. the
+  OBC commanding the payload off in response to a low-battery reading) is not
+  visible until that node's *next* telemetry beacon, one physical step later.
+  This one-step propagation delay is real bus behavior, not a bug — size an
+  assertion's `timeout` accordingly.
+
+`cubesat_testbed.protocol.telemetry_codec` bridges declarative config to the
+scalar-only signal codec. Telemetry frames are self-addressed
+(`destination == source`): v1 has no dedicated telemetry-sink node, and the
+in-memory bus's monitor queue already sees every frame regardless of
+destination, matching a promiscuous CAN bus analyzer.
+
+Non-numeric telemetry (e.g. `power_status = "offline"`) declares an `enum`
+mapping raw integer wire values to labels, since the wire codec itself is
+scalar-only:
+
+```toml
+[nodes.payload.telemetry.power_status]
+source_port = 21
+destination_port = 21
+offset = 0
+length = 1
+type = "uint"
+
+[nodes.payload.telemetry.power_status.enum]
+0 = "offline"
+1 = "online"
+```
 
 ## Runtime model
 

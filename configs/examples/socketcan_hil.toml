@@ -34,3 +34,17 @@ destination_port = 20
 units = "percent"
 min = 0
 max = 100
+offset = 0
+length = 4
+type = "float"
+
+[nodes.payload.telemetry.power_status]
+source_port = 21
+destination_port = 21
+offset = 0
+length = 1
+type = "uint"
+
+[nodes.payload.telemetry.power_status.enum]
+0 = "offline"
+1 = "online"

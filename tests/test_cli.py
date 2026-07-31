@@ -31,12 +31,12 @@ def test_cli_run_returns_zero_for_passing_scenario(capsys: pytest.CaptureFixture
     captured = capsys.readouterr()
     assert captured.err == ""
     assert (
-        "PASS t=3000000 assert_3: payload.telemetry.power_status == 'offline'; actual='offline'\n"
+        "PASS t=4000000 assert_3: payload.telemetry.power_status == 'offline'; actual='offline'\n"
         in captured.out
     )
     assert (
         "SUMMARY scenario='EPS Low Battery Protection Test' "
-        "assertions=1 passed=1 failed=0 started_at=0 finished_at=3000000\n" in captured.out
+        "assertions=1 passed=1 failed=0 started_at=0 finished_at=4000000\n" in captured.out
     )
 
 
@@ -64,7 +64,7 @@ def test_cli_run_json_outputs_result_and_overrides_quiet(
     assert payload["passed"] is True
     assert payload["exit_code"] == 0
     assert payload["started_at"] == 0
-    assert payload["finished_at"] == 3_000_000
+    assert payload["finished_at"] == 4_000_000
     assert payload["assertions"] == {
         "failed": 0,
         "passed": 1,
@@ -72,7 +72,7 @@ def test_cli_run_json_outputs_result_and_overrides_quiet(
             {
                 "actual": "offline",
                 "detail": "payload.telemetry.power_status == 'offline'; actual='offline'",
-                "evaluated_at": 3_000_000,
+                "evaluated_at": 4_000_000,
                 "expected": "offline",
                 "name": "assert_3",
                 "operator": "==",

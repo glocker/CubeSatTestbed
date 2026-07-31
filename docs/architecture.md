@@ -14,6 +14,8 @@ src/cubesat_testbed/
   scenario/assertions.py  # PASS/FAIL assertion primitives
   dut/manager.py          # Node mode orchestration
   protocol/csp_v2.py      # libcsp-compatible CSP v2 codec
+  protocol/signal_codec.py    # Byte-aligned scalar signal codec
+  protocol/telemetry_codec.py # Bridges TelemetryMapping config to signal_codec
   transport/base.py       # Bus adapter interface
   transport/factory.py    # Config-to-adapter construction
   transport/in_memory.py  # CI/local in-memory bus

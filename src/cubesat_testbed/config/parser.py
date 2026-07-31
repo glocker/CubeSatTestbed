@@ -180,6 +180,15 @@ class TelemetryMapping(BaseModel):
 
     If ``signal`` is omitted, the signal path is derived as
     ``<node>.telemetry.<mapping-name>`` during setup-level validation.
+
+    ``offset``/``length``/``type``/``endian``/``scale``/``offset_value`` declare
+    the byte-aligned wire layout used to encode this signal into its own
+    single-frame CSP payload (and decode it back); every telemetry mapping
+    requires one, so a configured signal can always be produced/consumed as
+    real bytes on the bus, not just read out of Python state. ``enum``
+    optionally maps the field's raw integer wire value to a label string (and
+    back) for non-numeric telemetry such as ``power_status``, since the wire
+    codec itself is scalar-only.
     """
 
     model_config = _SCHEMA_MODEL_CONFIG
@@ -192,6 +201,13 @@ class TelemetryMapping(BaseModel):
     units: str | None = None
     min: float | int | None = None
     max: float | int | None = None
+    offset: int
+    length: int
+    type: Literal["uint", "int", "float"]
+    endian: Literal["big", "little"] = "big"
+    scale: float = 1.0
+    offset_value: float = 0.0
+    enum: dict[str, str] | None = None
 
     @field_validator("signal")
     @classmethod
@@ -199,6 +215,56 @@ class TelemetryMapping(BaseModel):
         if value is None:
             return None
         return _validate_path("telemetry signal", value, min_segments=3)
+
+    @model_validator(mode="after")
+    def _validate_wire_layout(self) -> Self:
+        # Imported lazily: cubesat_testbed.protocol.signal_codec has no
+        # cubesat_testbed dependencies, so this isn't circular, but importing
+        # it at module scope would pull an unrelated codec module into every
+        # config parse; deferring it keeps that cost paid only when a
+        # telemetry mapping is actually validated.
+        from cubesat_testbed.protocol.signal_codec import (
+            SignalCodecError,
+            SignalDataType,
+            SignalEndian,
+            SignalField,
+        )
+
+        try:
+            SignalField(
+                name="telemetry-field-check",
+                byte_offset=self.offset,
+                byte_length=self.length,
+                data_type=SignalDataType(self.type),
+                endian=SignalEndian(self.endian),
+                scale=self.scale,
+                offset=self.offset_value,
+            )
+        except SignalCodecError as exc:
+            raise ValueError(f"invalid telemetry wire layout: {exc}") from exc
+
+        if self.enum is not None:
+            self._validate_enum()
+        return self
+
+    def _validate_enum(self) -> None:
+        assert self.enum is not None
+        if self.type == "float":
+            raise ValueError("enum is only valid for 'uint'/'int' telemetry fields")
+        if not self.enum:
+            raise ValueError("enum must not be empty when provided")
+
+        labels_seen: set[str] = set()
+        for raw_key, label in self.enum.items():
+            try:
+                int(raw_key)
+            except ValueError:
+                raise ValueError(
+                    f"enum key {raw_key!r} must be an integer raw value, given as a string"
+                ) from None
+            if label in labels_seen:
+                raise ValueError(f"enum label {label!r} is mapped by more than one raw value")
+            labels_seen.add(label)
 
     def resolved_signal(self, node_name: str, mapping_name: str) -> str:
         """Return the explicit or derived full telemetry path."""
