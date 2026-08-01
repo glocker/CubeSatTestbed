@@ -51,8 +51,10 @@ unblock that user, highest first.
        frames an OBC Peer sends straight to the bus are visible too. Composes
        with `--json`/`--quiet`; observability only, with no effect on scenario
        semantics or determinism.
-3. [ ] **Consistent release status in the docs.** The README still describes the
-       project as pre-v1 even though 1.0.0 is tagged, released and on PyPI.
+3. [x] **Consistent release status in the docs.** The README status line, the
+       changelog's versioning note and the `Development Status` trove
+       classifier now all state the same thing: 1.0.0 is tagged, released and
+       on PyPI.
 4. [ ] **A working install path from PyPI.** Every config and scenario currently
        lives in the repository, so there is nothing to run after
        `pip install cubesat-testbed`. Add `cubesat-testbed init` and/or ship the
