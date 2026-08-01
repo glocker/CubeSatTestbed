@@ -44,10 +44,12 @@ unblock that user, highest first.
        `RealTimeClock`, so a real peer gets wall-clock time to answer; a
        SocketCAN transport configured without the flag warns on `stderr`.
        Covered end to end against `vcan0` under the `socketcan` pytest marker.
-2. [ ] **Wire-level frame trace.** Add `--trace`, writing decoded frames to
+2. [x] **Wire-level frame trace.** `run --trace` writes decoded frames to
        stderr: virtual timestamp, direction, CSP header fields, raw payload
-       bytes, and the signals decoded from them. Composes with
-       `--json`/`--quiet`; observability only, with no effect on scenario
+       bytes, and the command route or telemetry signal decoded from them.
+       Traced at the transport boundary, so outgoing SocketCAN frames and
+       frames an OBC Peer sends straight to the bus are visible too. Composes
+       with `--json`/`--quiet`; observability only, with no effect on scenario
        semantics or determinism.
 3. [ ] **Consistent release status in the docs.** The README still describes the
        project as pre-v1 even though 1.0.0 is tagged, released and on PyPI.

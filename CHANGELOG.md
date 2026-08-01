@@ -10,6 +10,17 @@ first tag is cut.
 
 ### Added
 
+- `cubesat-testbed run --trace`: writes one decoded line per CAN frame to
+  `stderr` -- virtual timestamp, direction, CSP v2 header fields, the raw CAN
+  data and CSP payload bytes, and the configured command route or decoded
+  telemetry signal the frame carries. A failing scenario can now be diagnosed
+  from CLI output alone. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#wire-level-frame-trace).
+- `TracingTransportAdapter`, a transport wrapper that traces every frame in
+  both directions. It sits at the transport boundary, so it also sees frames an
+  OBC Peer module sends straight to the bus, and outgoing frames on SocketCAN,
+  which the adapter never receives back. `build_runtime`/`run_scenario`/
+  `run_scenario_files` take a `trace` stream to enable it from the Python API.
 - `cubesat-testbed run --realtime`: runs the scenario on a `RealTimeClock`
   instead of the default `VirtualClock`, pacing virtual time against
   wall-clock time so a real `software`/`hardware` peer gets a window to

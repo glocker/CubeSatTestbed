@@ -199,6 +199,22 @@ uv run cubesat-testbed run --config ... --scenario ... --json --quiet
 Or `--junit-xml PATH` for CI dashboards. Full config syntax:
 [`configs/schema/module_schema.md`](configs/schema/module_schema.md).
 
+**7. Seeing the actual bus**
+
+Add `--trace` for a decoded frame-by-frame trace on `stderr`:
+
+```text
+trace t=4000000 TX can_id=0x10004103 dlc=8 pri=2 src=2 dst=2 dport=20 sport=20 flags=0x00 data=0009450041c80000 payload=41c80000 telemetry eps.telemetry.battery_percent=25.0
+trace t=4000000 TX can_id=0x10006083 dlc=5 pri=2 src=1 dst=3 dport=10 sport=10 flags=0x00 data=0004a28000 payload=00 command obc.payload_power_off->payload
+```
+
+Virtual timestamp, direction, CSP v2 header fields, the raw bytes as `candump`
+would show them, and the command route or telemetry value decoded out of the
+frame. This is the same decode path assertions use — the trace is a window on
+it, not a parallel report. It goes to `stderr`, so it composes with `--json`
+and `--quiet`, and it works on SocketCAN too, where it is the only way to see
+what your testbed actually put on the wire.
+
 ## Hardware in the loop
 
 Point the same scenario at a real bus: switch the node under test to
@@ -222,6 +238,10 @@ straight through virtual time and a real board never gets wall-clock time to
 answer. A `socketcan` setup run without the flag therefore warns on `stderr`.
 Under `--realtime`, a scenario that waits `30s` really does take 30 seconds.
 
+Add `--trace` when a HIL run misbehaves: on SocketCAN the adapter never
+receives its own messages, so the trace is the only place both what the
+testbed sent and what the board answered show up side by side.
+
 For local loopback without hardware, bring up `vcan0` first:
 
 ```sh
@@ -236,7 +256,8 @@ sudo ip link set up vcan0
 - Modules: Generic EPS, OBC Peer (rule engine), Simple Payload.
 - Transports: in-memory (CI/tests) and SocketCAN (Linux HIL).
 - Deterministic virtual-time engine, TOML setup + YAML scenarios, PASS/FAIL
-  CLI report with CI-friendly exit codes and JUnit XML output.
+  CLI report with CI-friendly exit codes, JUnit XML output and a decoded
+  wire-level frame trace (`--trace`).
 
 Full detail, constraints, and what's deliberately out of scope for v1:
 [`docs/v1-scope.md`](docs/v1-scope.md).

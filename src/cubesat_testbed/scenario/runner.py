@@ -60,7 +60,11 @@ from cubesat_testbed.modules import (
     TelemetrySample,
 )
 from cubesat_testbed.protocol.csp_v2 import CspFields, DecodedCspPacket, decode_frame, pack
-from cubesat_testbed.protocol.telemetry_codec import decode_telemetry_value, encode_telemetry_value
+from cubesat_testbed.protocol.telemetry_codec import (
+    TelemetryCodecError,
+    decode_telemetry_value,
+    encode_telemetry_value,
+)
 from cubesat_testbed.scenario.assertions import (
     AssertionResult,
     TelemetryAssertion,
@@ -68,6 +72,8 @@ from cubesat_testbed.scenario.assertions import (
 )
 from cubesat_testbed.transport import (
     EndpointId,
+    FrameAnnotator,
+    TracingTransportAdapter,
     TransportAdapter,
     TransportEnvelope,
     build_transport_adapter,
@@ -740,6 +746,7 @@ def build_runtime(
     *,
     obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None = None,
     clock: Clock | None = None,
+    trace: TextIO | None = None,
 ) -> ScenarioRuntime:
     """Build a runtime from a validated setup config.
 
@@ -762,14 +769,29 @@ def build_runtime(
     wall-clock time for a HIL run, so a real ``software``/``hardware`` peer
     gets a realistic window to respond instead of the run blasting through
     virtual time instantly.
+
+    Pass ``trace`` (a text stream, typically ``sys.stderr``) to wrap the
+    transport in a :class:`~cubesat_testbed.transport.TracingTransportAdapter`
+    and get one decoded line per frame crossing the bus. Purely observational:
+    it changes neither scenario semantics nor determinism.
     """
 
     engine = DiscreteEventEngine()
     fault_engine = FaultInjectionEngine(engine)
+    command_routes = _build_command_routes(setup)
+    telemetry_routes = _build_telemetry_routes(setup)
     transport = build_transport_adapter(
         setup.transport, endpoints=(node.address for node in setup.nodes.values())
     )
-    command_routes = _build_command_routes(setup)
+    if trace is not None:
+        # Wrapping here, rather than tracing inside the runner, is what makes
+        # frames an OBC Peer module sends straight to the transport visible too.
+        transport = TracingTransportAdapter(
+            transport,
+            stream=trace,
+            now=lambda: engine.now,
+            annotate=_build_frame_annotator(command_routes, telemetry_routes),
+        )
     participants = resolve_participants(setup)
 
     modules: dict[str, SimulatedModule] = {}
@@ -812,7 +834,6 @@ def build_runtime(
         if participant.is_simulated and node_name not in modules:
             raise ScenarioRuntimeError(f"simulated node {node_name!r} has no runtime module")
 
-    telemetry_routes = _build_telemetry_routes(setup)
     telemetry_routes_by_signal = {route.signal: route for route in telemetry_routes}
     telemetry_fields_by_node, telemetry_order = _telemetry_plan_from_routes(telemetry_routes)
     tick_order = _build_tick_order(setup, modules)
@@ -859,6 +880,7 @@ def run_scenario(
     output: TextIO | None = None,
     obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None = None,
     clock: Clock | None = None,
+    trace: TextIO | None = None,
 ) -> ScenarioRunResult:
     """Build a runtime (in-memory or SocketCAN, per setup) and run a scenario.
 
@@ -866,9 +888,12 @@ def run_scenario(
     hand its CAN socket back when the scenario ends, whether it passed, failed
     or raised. Callers that build their own runtime (``build_runtime`` plus
     :class:`ScenarioRunner`) keep owning its transport instead.
+
+    ``trace`` is a stream to write a per-frame wire trace to; it should not be
+    the same stream as ``output``, which carries the assertion report.
     """
 
-    runtime = build_runtime(setup, obc_rules=obc_rules, clock=clock)
+    runtime = build_runtime(setup, obc_rules=obc_rules, clock=clock, trace=trace)
     try:
         return ScenarioRunner(runtime, output=output).run(scenario)
     finally:
@@ -882,12 +907,20 @@ def run_scenario_files(
     output: TextIO | None = None,
     obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None = None,
     clock: Clock | None = None,
+    trace: TextIO | None = None,
 ) -> ScenarioRunResult:
     """Load setup/scenario files, validate references, and execute them."""
 
     setup = load_testbed_config(setup_path)
     scenario = load_scenario(scenario_path, setup=setup)
-    return run_scenario(scenario, setup, output=output, obc_rules=obc_rules, clock=clock)
+    return run_scenario(
+        scenario,
+        setup,
+        output=output,
+        obc_rules=obc_rules,
+        clock=clock,
+        trace=trace,
+    )
 
 
 def build_obc_rules_from_file(path: str | Path) -> dict[str, tuple[ObcPeerRule, ...]]:
@@ -904,6 +937,65 @@ def build_obc_rules_from_file(path: str | Path) -> dict[str, tuple[ObcPeerRule, 
         node_name: tuple(_build_obc_peer_rule(name, rule) for name, rule in rules.items())
         for node_name, rules in rules_by_node.items()
     }
+
+
+def _build_frame_annotator(
+    command_routes: tuple[_CommandRoute, ...],
+    telemetry_routes: tuple[_TelemetryRoute, ...],
+) -> FrameAnnotator:
+    """Build the trace annotator that names the route a traced frame matches.
+
+    Deliberately more forgiving than the delivery path: a frame matching no
+    configured route, or several at once, is described as such instead of
+    raising. A trace is frequently switched on *because* traffic is unexpected,
+    so it has to be able to report the unexpected rather than fail on it.
+    """
+
+    def annotate(packet: DecodedCspPacket) -> str | None:
+        fields = packet.fields
+        commands = [
+            route
+            for route in command_routes
+            if route.source_address == fields.source
+            and route.destination_address == fields.destination
+            and route.destination_port == fields.destination_port
+            and route.source_port == fields.source_port
+        ]
+        exact_payload = [route for route in commands if route.payload_hex == packet.payload]
+        if len(exact_payload) == 1:
+            return _command_annotation(exact_payload[0])
+        if len(commands) == 1:
+            return _command_annotation(commands[0])
+        if commands:
+            return "command ambiguous-route"
+
+        telemetry = [
+            route
+            for route in telemetry_routes
+            if route.source_address == fields.source
+            and route.destination_address == fields.destination
+            and route.destination_port == fields.destination_port
+            and route.source_port == fields.source_port
+        ]
+        if len(telemetry) == 1:
+            return _telemetry_annotation(telemetry[0], packet.payload)
+        if telemetry:
+            return "telemetry ambiguous-route"
+        return "unrouted"
+
+    return annotate
+
+
+def _command_annotation(route: _CommandRoute) -> str:
+    return f"command {route.source_node}.{route.command}->{route.target_node}"
+
+
+def _telemetry_annotation(route: _TelemetryRoute, payload: bytes) -> str:
+    try:
+        value = decode_telemetry_value(route.field_name, route.mapping, payload)
+    except TelemetryCodecError as exc:
+        return f"telemetry {route.signal} undecodable={str(exc)!r}"
+    return f"telemetry {route.signal}={value!r}"
 
 
 def _build_command_routes(setup: TestbedConfig) -> tuple[_CommandRoute, ...]:

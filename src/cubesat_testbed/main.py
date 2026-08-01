@@ -78,6 +78,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_parser.add_argument(
+        "--trace",
+        action="store_true",
+        help=(
+            "write a decoded per-frame wire trace to stderr: virtual timestamp, direction, "
+            "CSP header fields, raw bytes and the decoded command/telemetry signal"
+        ),
+    )
+    run_parser.add_argument(
         "--quiet",
         action="store_true",
         help="suppress normal stdout output; stderr warnings/errors are still emitted",
@@ -118,6 +126,9 @@ def _run_command(args: argparse.Namespace) -> int:
             output=output,
             obc_rules=obc_rules,
             clock=clock,
+            # The trace goes to stderr precisely so it stays out of the way of
+            # --json/--quiet stdout, which is why it ignores both flags.
+            trace=sys.stderr if args.trace else None,
         )
     except Exception as exc:  # noqa: BLE001
         # CLI contract: execution errors map to 2; assertion failures map to 1 via result.passed.
