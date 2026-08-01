@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from pydantic import ValidationError
 
@@ -23,10 +21,16 @@ from cubesat_testbed.config import (
 from cubesat_testbed.config import (
     TestbedConfig as SetupConfigModel,
 )
+from tests.example_paths import (
+    DEFAULT_SCENARIO,
+    DEFAULT_SETUP,
+    MODULE_PARAMS_SETUP,
+    SOCKETCAN_SETUP,
+)
 
 
 def test_default_setup_and_low_battery_scenario_validate_together() -> None:
-    setup = load_testbed_config(Path("configs/default_satellite.toml"))
+    setup = load_testbed_config(DEFAULT_SETUP)
 
     assert isinstance(setup, SetupConfigModel)
     assert setup.nodes["obc"].mode is NodeMode.SIMULATED
@@ -35,7 +39,7 @@ def test_default_setup_and_low_battery_scenario_validate_together() -> None:
         {"eps.telemetry.battery_percent", "payload.telemetry.power_status"}
     )
 
-    scenario = load_scenario(Path("configs/scenarios/low_battery.yaml"), setup=setup)
+    scenario = load_scenario(DEFAULT_SCENARIO, setup=setup)
 
     assert scenario.name == "EPS Low Battery Protection Test"
     assert len(scenario.steps) == 3
@@ -210,7 +214,7 @@ def test_setup_rejects_hardware_node_on_in_memory_transport() -> None:
 
 
 def test_setup_accepts_socketcan_hil_transport_for_hardware_node() -> None:
-    setup = load_testbed_config(Path("configs/examples/socketcan_hil.toml"))
+    setup = load_testbed_config(SOCKETCAN_SETUP)
 
     assert isinstance(setup.transport, SocketCanTransportConfig)
     assert setup.transport.interface == "vcan0"
@@ -218,7 +222,7 @@ def test_setup_accepts_socketcan_hil_transport_for_hardware_node() -> None:
 
 
 def test_example_module_params_config_loads_and_overrides_eps_defaults() -> None:
-    setup = load_testbed_config(Path("configs/examples/module_params.toml"))
+    setup = load_testbed_config(MODULE_PARAMS_SETUP)
 
     assert setup.nodes["eps"].params == {
         "battery_capacity_wh": 40.0,
@@ -608,7 +612,7 @@ def test_scenario_rejects_named_fault_expiration() -> None:
 
 
 def test_scenario_reference_validation_rejects_unknown_command() -> None:
-    setup = load_testbed_config(Path("configs/default_satellite.toml"))
+    setup = load_testbed_config(DEFAULT_SETUP)
 
     with pytest.raises(ScenarioReferenceError, match="command 'missing_command' is not configured"):
         parse_scenario(
@@ -623,7 +627,7 @@ def test_scenario_reference_validation_rejects_unknown_command() -> None:
 
 
 def test_scenario_reference_validation_rejects_unmapped_assertion_signal() -> None:
-    setup = load_testbed_config(Path("configs/default_satellite.toml"))
+    setup = load_testbed_config(DEFAULT_SETUP)
 
     with pytest.raises(ScenarioReferenceError, match="assertion signal 'eps.telemetry.unknown'"):
         parse_scenario(

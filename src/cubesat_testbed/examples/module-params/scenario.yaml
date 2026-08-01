@@ -1,0 +1,17 @@
+name: "EPS Parameter Override Test"
+description: "Verify that [nodes.eps.params] retunes the built-in EPS model"
+
+steps:
+  - action: "wait"
+    virtual_time: "2s"
+
+  # The built-in generic_eps starts at 80%. Reading back more than that off the
+  # bus is the proof that initial_battery_percent = 90.0 reached the model:
+  # over 2 virtual seconds the power model moves the battery by well under a
+  # tenth of a percent, so this asserts the override, not the physics.
+  - action: "assert"
+    name: "params_reached_the_model"
+    signal: "eps.telemetry.battery_percent"
+    op: ">"
+    value: 85.0
+    timeout: "1s"

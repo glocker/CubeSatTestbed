@@ -13,6 +13,14 @@ from typing import cast
 
 from cubesat_testbed.clock import Clock, RealTimeClock
 from cubesat_testbed.config import SocketCanTransportConfig, TestbedConfig, load_testbed_config
+from cubesat_testbed.examples import (
+    DEFAULT_EXAMPLE_NAME,
+    SCENARIO_FILENAME,
+    SETUP_FILENAME,
+    Example,
+    available_examples,
+    get_example,
+)
 from cubesat_testbed.scenario import (
     ScenarioRunResult,
     build_obc_rules_from_file,
@@ -40,24 +48,32 @@ def _build_parser() -> argparse.ArgumentParser:
         help="run a scenario against a setup config",
         description=(
             "Run a YAML scenario against a TOML setup config, on the in-memory runtime by "
-            "default or against a real bus with --realtime."
+            "default or against a real bus with --realtime. Pass --example NAME instead to "
+            "run one of the setups shipped with the package."
         ),
     )
     run_parser.add_argument(
         "-c",
         "--config",
-        required=True,
         type=Path,
         metavar="PATH",
-        help="path to the testbed setup TOML file",
+        help="path to the testbed setup TOML file; required unless --example is given",
     )
     run_parser.add_argument(
         "-s",
         "--scenario",
-        required=True,
         type=Path,
         metavar="PATH",
-        help="path to the scenario YAML file",
+        help="path to the scenario YAML file; required unless --example is given",
+    )
+    run_parser.add_argument(
+        "--example",
+        metavar="NAME",
+        default=None,
+        help=(
+            "run a packaged example in place instead of --config/--scenario, so a fresh "
+            f"install has something to run; one of: {_example_name_list()}"
+        ),
     )
     run_parser.add_argument(
         "--rules",
@@ -104,7 +120,47 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run_parser.set_defaults(handler=_run_command)
 
+    init_parser = subcommands.add_parser(
+        "init",
+        help="copy a runnable example setup and scenario into a directory",
+        description=(
+            "Materialise a packaged example -- a setup TOML, a scenario YAML and a README "
+            "explaining them -- into DIR, so an installed package has something to run "
+            "and to edit without cloning the repository."
+        ),
+    )
+    init_parser.add_argument(
+        "directory",
+        nargs="?",
+        type=Path,
+        default=Path(),
+        metavar="DIR",
+        help="directory to write the example into; created if missing, defaults to '.'",
+    )
+    init_parser.add_argument(
+        "--example",
+        metavar="NAME",
+        default=DEFAULT_EXAMPLE_NAME,
+        help=f"which example to copy; one of: {_example_name_list()} (default: %(default)s)",
+    )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite existing files in DIR instead of refusing to clobber them",
+    )
+    init_parser.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_examples",
+        help="list the available examples and exit without writing anything",
+    )
+    init_parser.set_defaults(handler=_init_command)
+
     return parser
+
+
+def _example_name_list() -> str:
+    return ", ".join(example.name for example in available_examples())
 
 
 def _run_command(args: argparse.Namespace) -> int:
@@ -114,15 +170,16 @@ def _run_command(args: argparse.Namespace) -> int:
 
     started = time.perf_counter()
     try:
+        config_path, scenario_path = _resolve_run_inputs(args)
         # The setup is loaded here as well as inside run_scenario_files, because the
         # transport/--realtime mismatch is a CLI-level warning and has to be raised
         # before the run starts. Both loads fail the same way, so a bad config still
         # reports one concise error and exit code 2.
-        _warn_on_unpaced_socketcan(load_testbed_config(args.config), realtime=args.realtime)
+        _warn_on_unpaced_socketcan(load_testbed_config(config_path), realtime=args.realtime)
         obc_rules = build_obc_rules_from_file(args.rules) if args.rules is not None else None
         result = run_scenario_files(
-            args.config,
-            args.scenario,
+            config_path,
+            scenario_path,
             output=output,
             obc_rules=obc_rules,
             clock=clock,
@@ -159,6 +216,66 @@ def _run_command(args: argparse.Namespace) -> int:
     elif not args.quiet:
         _print_summary(result)
     return exit_code
+
+
+def _resolve_run_inputs(args: argparse.Namespace) -> tuple[Path, Path]:
+    """Return the setup and scenario paths the run was asked for.
+
+    Raises ``ValueError`` for every bad combination, so a missing flag reports
+    the same concise error and exit code 2 as an unreadable config -- including
+    in ``--json`` mode, which is why this is not an ``argparse`` requirement.
+    """
+
+    if args.example is not None:
+        if args.config is not None or args.scenario is not None:
+            raise ValueError("--example cannot be combined with --config/--scenario")
+        example = get_example(args.example)
+        return example.setup_path, example.scenario_path
+    if args.config is None or args.scenario is None:
+        raise ValueError(
+            "either --example NAME, or both --config and --scenario, must be given "
+            f"(available examples: {_example_name_list()})"
+        )
+    return cast("Path", args.config), cast("Path", args.scenario)
+
+
+def _init_command(args: argparse.Namespace) -> int:
+    if args.list_examples:
+        _print_example_list()
+        return _EXIT_SUCCESS
+
+    try:
+        example = get_example(args.example)
+        written = example.copy_to(args.directory, force=args.force)
+    except (OSError, ValueError) as exc:
+        _print_error(
+            str(exc),
+            json_output=False,
+            exit_code=_EXIT_EXECUTION_ERROR,
+            kind="execution_error",
+        )
+        return _EXIT_EXECUTION_ERROR
+
+    for path in written:
+        print(f"wrote {path}")
+    print(f"\nnext: {_example_run_command(example, args.directory)}")
+    return _EXIT_SUCCESS
+
+
+def _print_example_list() -> None:
+    examples = available_examples()
+    width = max(len(example.name) for example in examples)
+    for example in examples:
+        print(f"{example.name:<{width}}  {example.summary}")
+
+
+def _example_run_command(example: Example, directory: Path) -> str:
+    flags = "".join(f"{flag} " for flag in example.run_flags)
+    return (
+        f"cubesat-testbed run {flags}"
+        f"--config {directory / SETUP_FILENAME} "
+        f"--scenario {directory / SCENARIO_FILENAME}"
+    )
 
 
 def _warn_on_unpaced_socketcan(setup: TestbedConfig, *, realtime: bool) -> None:

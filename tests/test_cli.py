@@ -11,10 +11,11 @@ from cubesat_testbed.clock import RealTimeClock
 from cubesat_testbed.main import main
 from cubesat_testbed.scenario import ScenarioRunResult
 from cubesat_testbed.scenario.assertions import AssertionOperator, AssertionResult
+from tests.example_paths import DEFAULT_SCENARIO, DEFAULT_SETUP, SOCKETCAN_SETUP
 
-DEFAULT_CONFIG = "configs/default_satellite.toml"
-LOW_BATTERY_SCENARIO = "configs/scenarios/low_battery.yaml"
-SOCKETCAN_CONFIG = "configs/examples/socketcan_hil.toml"
+DEFAULT_CONFIG = str(DEFAULT_SETUP)
+LOW_BATTERY_SCENARIO = str(DEFAULT_SCENARIO)
+SOCKETCAN_CONFIG = str(SOCKETCAN_SETUP)
 
 
 def _raise_keyboard_interrupt(*_args: object, **_kwargs: object) -> object:

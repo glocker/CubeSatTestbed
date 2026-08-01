@@ -42,10 +42,11 @@ from cubesat_testbed.protocol.csp_v2 import (
 )
 from cubesat_testbed.scenario import ScenarioRunner, build_runtime
 from cubesat_testbed.transport import SocketCanAdapter
+from tests.example_paths import SOCKETCAN_SETUP
 
 pytestmark = pytest.mark.socketcan
 
-_HIL_EXAMPLE_CONFIG = Path("configs/examples/socketcan_hil.toml")
+_HIL_EXAMPLE_CONFIG = SOCKETCAN_SETUP
 # The shipped example's payload node: a `hardware` DUT at CSP address 3 whose
 # power_status telemetry is a self-addressed single-byte enum on port 21.
 _PAYLOAD_ADDRESS = 3
