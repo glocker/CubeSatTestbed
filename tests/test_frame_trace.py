@@ -21,10 +21,11 @@ from cubesat_testbed.transport import (
     TransportEnvelope,
     format_trace_line,
 )
+from tests.example_paths import DEFAULT_SCENARIO, DEFAULT_SETUP
 from tests.test_socketcan_transport import FakeCanBus
 
-DEFAULT_CONFIG = "configs/default_satellite.toml"
-LOW_BATTERY_SCENARIO = "configs/scenarios/low_battery.yaml"
+DEFAULT_CONFIG = str(DEFAULT_SETUP)
+LOW_BATTERY_SCENARIO = str(DEFAULT_SCENARIO)
 
 
 def _envelope(frame: CspCanFrame, *, sequence: int = 0) -> TransportEnvelope:

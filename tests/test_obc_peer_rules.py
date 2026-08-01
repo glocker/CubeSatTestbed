@@ -18,6 +18,7 @@ from cubesat_testbed.modules import (
 )
 from cubesat_testbed.protocol.csp_v2 import decode_frame
 from cubesat_testbed.transport import InMemoryBusAdapter
+from tests.example_paths import DEFAULT_SETUP
 
 
 def test_obc_peer_for_duration_and_cooldown_gate_named_command_emission() -> None:
@@ -192,7 +193,7 @@ def test_obc_peer_fault_actions_call_passive_fault_engine() -> None:
 
 
 def test_obc_peer_uses_setup_command_mappings_for_csp_payloads() -> None:
-    setup = load_testbed_config("configs/default_satellite.toml")
+    setup = load_testbed_config(DEFAULT_SETUP)
     bus = InMemoryBusAdapter()
     obc = ObcPeerModule.from_testbed_config(
         setup,

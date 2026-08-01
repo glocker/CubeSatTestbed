@@ -52,10 +52,8 @@ breakdown.
 ## Quickstart
 
 ```sh
-uv sync --extra dev
-uv run cubesat-testbed run \
-  --config configs/default_satellite.toml \
-  --scenario configs/scenarios/low_battery.yaml
+pip install cubesat-testbed
+cubesat-testbed run --example default
 ```
 
 ```text
@@ -63,12 +61,36 @@ PASS t=4000000 assert_3: payload.telemetry.power_status == 'offline'; actual='of
 SUMMARY scenario='EPS Low Battery Protection Test' assertions=1 passed=1 failed=0 started_at=0 finished_at=4000000
 ```
 
+The examples ship inside the package, so that is the whole install. To get an
+editable copy of one to work from:
+
+```sh
+cubesat-testbed init my-testbed
+cd my-testbed
+cubesat-testbed run --config setup.toml --scenario scenario.yaml
+```
+
+`init` writes a `setup.toml`, a `scenario.yaml` and a `README.md` explaining
+them, and refuses to overwrite existing files unless you pass `--force`.
+`cubesat-testbed init --list` shows what else is available:
+
+```text
+default        in-memory three-node satellite; OBC sheds the payload on a low battery
+socketcan-hil  the same run against a real bus: payload as hardware on SocketCAN vcan0
+module-params  retuning a built-in module through [nodes.<node>.params]
+```
+
+Working on the testbed itself instead of with it? See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) — the development flow is `uv sync --extra
+dev` from a clone, and `uv run cubesat-testbed ...` for every command below.
+
 ## Walkthrough: your first scenario
 
 Same run as Quickstart above, but step by step — what each config field means and
-how to read the result.
+how to read the result. Run `cubesat-testbed init my-testbed` first, so the two
+files being taken apart here are in front of you.
 
-**1. The CubeSat setup (`configs/default_satellite.toml`)**
+**1. The CubeSat setup (`setup.toml`)**
 
 Three nodes:
 
@@ -118,7 +140,7 @@ EPS reports `battery_percent` as a 4-byte float, encoded onto the bus like a rea
 telemetry frame, not just held in memory. OBC has one rule: if battery stays below
 30% for 3 virtual seconds, send `payload_power_off`.
 
-**2. The scenario (`configs/scenarios/low_battery.yaml`)**
+**2. The scenario (`scenario.yaml`)**
 
 ```yaml
 steps:
@@ -148,9 +170,7 @@ steps:
 **3. Run it**
 
 ```sh
-uv run cubesat-testbed run \
-  --config configs/default_satellite.toml \
-  --scenario configs/scenarios/low_battery.yaml
+cubesat-testbed run --config setup.toml --scenario scenario.yaml
 ```
 
 ```text
@@ -170,7 +190,8 @@ SUMMARY scenario='EPS Low Battery Protection Test' assertions=1 passed=1 failed=
 
 **5. When it fails**
 
-Drop the `inject_fault` step (battery never actually drops) and rerun:
+Drop the `inject_fault` step from `scenario.yaml` (battery never actually
+drops) and rerun:
 
 ```text
 FAIL t=4000000 assert_2: payload.telemetry.power_status == 'offline'; actual='online'
@@ -182,7 +203,7 @@ guess.
 **6. Machine-readable output**
 
 ```sh
-uv run cubesat-testbed run --config ... --scenario ... --json --quiet
+cubesat-testbed run --config ... --scenario ... --json --quiet
 ```
 
 ```json
@@ -232,11 +253,12 @@ type = "socketcan"
 interface = "vcan0" # or a physical interface such as "can0"
 ```
 
+That is exactly what the `socketcan-hil` example does to the setup above —
+one node's `mode`, one transport block, no code change:
+
 ```sh
-uv run cubesat-testbed run \
-  --realtime \
-  --config configs/examples/socketcan_hil.toml \
-  --scenario configs/scenarios/low_battery.yaml
+cubesat-testbed init hil --example socketcan-hil
+cubesat-testbed run --realtime --config hil/setup.toml --scenario hil/scenario.yaml
 ```
 
 `--realtime` is what makes a HIL run work: without it the engine jumps

@@ -14,6 +14,7 @@ from cubesat_testbed.config import load_testbed_config
 from cubesat_testbed.protocol.csp_v2 import CspCanFrame
 from cubesat_testbed.scenario import ScenarioRunner, build_runtime
 from cubesat_testbed.transport.base import EndpointId, TransportAdapter, TransportEnvelope
+from tests.example_paths import DEFAULT_SETUP
 
 
 class _BlockingFakeTransport(TransportAdapter):
@@ -65,7 +66,7 @@ class _BlockingFakeTransport(TransportAdapter):
 
 
 def test_wait_with_virtual_clock_does_not_pace_against_wall_clock_time() -> None:
-    setup = load_testbed_config("configs/default_satellite.toml")
+    setup = load_testbed_config(DEFAULT_SETUP)
     runtime = build_runtime(setup)
     assert isinstance(runtime.clock, VirtualClock)
     runner = ScenarioRunner(runtime)
@@ -78,7 +79,7 @@ def test_wait_with_virtual_clock_does_not_pace_against_wall_clock_time() -> None
 
 
 def test_wait_with_real_time_clock_paces_against_wall_clock_time() -> None:
-    setup = load_testbed_config("configs/default_satellite.toml")
+    setup = load_testbed_config(DEFAULT_SETUP)
     runtime = build_runtime(setup, clock=RealTimeClock())
     runner = ScenarioRunner(runtime)
 
@@ -97,7 +98,7 @@ def test_wait_with_real_time_clock_delivers_an_early_frame_promptly() -> None:
     until-condition-met operation.
     """
 
-    setup = load_testbed_config("configs/default_satellite.toml")
+    setup = load_testbed_config(DEFAULT_SETUP)
     fake_transport = _BlockingFakeTransport(frame_after_seconds=0.02)
     base_runtime = build_runtime(setup, clock=RealTimeClock())
     runtime = dataclasses.replace(base_runtime, transport=fake_transport)

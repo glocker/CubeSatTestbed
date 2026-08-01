@@ -21,11 +21,12 @@ from cubesat_testbed.scenario import (
     run_scenario,
 )
 from cubesat_testbed.transport import InMemoryBusAdapter
+from tests.example_paths import DEFAULT_SCENARIO, DEFAULT_SETUP
 
 
 def test_default_low_battery_scenario_runs_over_virtual_time_with_pass_output() -> None:
-    setup = load_testbed_config(Path("configs/default_satellite.toml"))
-    scenario = load_scenario(Path("configs/scenarios/low_battery.yaml"), setup=setup)
+    setup = load_testbed_config(DEFAULT_SETUP)
+    scenario = load_scenario(DEFAULT_SCENARIO, setup=setup)
     output = StringIO()
     runtime = build_in_memory_runtime(setup)
 
@@ -49,7 +50,7 @@ def test_default_low_battery_scenario_runs_over_virtual_time_with_pass_output() 
 
 
 def test_send_command_step_updates_simulated_module_through_in_memory_bus() -> None:
-    setup = load_testbed_config(Path("configs/default_satellite.toml"))
+    setup = load_testbed_config(DEFAULT_SETUP)
     scenario = parse_scenario(
         """
         name: Payload command smoke
@@ -82,7 +83,7 @@ def test_send_command_step_updates_simulated_module_through_in_memory_bus() -> N
 
 
 def test_assert_step_waits_until_timeout_and_reports_fail_deterministically() -> None:
-    setup = load_testbed_config(Path("configs/default_satellite.toml"))
+    setup = load_testbed_config(DEFAULT_SETUP)
     scenario = parse_scenario(
         """
         name: Battery should not be critical
@@ -117,7 +118,7 @@ def test_assert_step_waits_until_timeout_and_reports_fail_deterministically() ->
 
 
 def test_unrouted_bus_frame_warns_and_is_ignored_instead_of_aborting() -> None:
-    setup = load_testbed_config(Path("configs/default_satellite.toml"))
+    setup = load_testbed_config(DEFAULT_SETUP)
     runtime = build_in_memory_runtime(setup)
     runner = ScenarioRunner(runtime)
 
@@ -136,7 +137,7 @@ def test_unrouted_bus_frame_warns_and_is_ignored_instead_of_aborting() -> None:
 
 
 def test_wait_raises_instead_of_silently_returning_early_when_budget_exhausted() -> None:
-    setup = load_testbed_config(Path("configs/default_satellite.toml"))
+    setup = load_testbed_config(DEFAULT_SETUP)
     runtime = build_in_memory_runtime(setup)
     runner = ScenarioRunner(runtime, max_settle_events=2)
 
@@ -145,7 +146,7 @@ def test_wait_raises_instead_of_silently_returning_early_when_budget_exhausted()
 
 
 def test_assert_step_fails_gracefully_when_signal_never_observed_within_timeout() -> None:
-    setup = load_testbed_config(Path("configs/default_satellite.toml"))
+    setup = load_testbed_config(DEFAULT_SETUP)
     scenario = parse_scenario(
         """
         name: Never-emitted signal
@@ -176,7 +177,7 @@ def test_assert_step_fails_gracefully_when_signal_never_observed_within_timeout(
 
 
 def test_telemetry_round_trips_through_a_real_csp_frame_on_the_bus() -> None:
-    setup = load_testbed_config(Path("configs/default_satellite.toml"))
+    setup = load_testbed_config(DEFAULT_SETUP)
     runtime = build_in_memory_runtime(setup)
     # An independent sniffer endpoint, connected before anything is sent,
     # proves the EPS module's telemetry actually left as a real CSP-over-CAN
@@ -201,7 +202,7 @@ def test_telemetry_round_trips_through_a_real_csp_frame_on_the_bus() -> None:
 
 
 def test_inline_setup_rule_sheds_payload_on_low_battery() -> None:
-    setup = load_testbed_config(Path("configs/default_satellite.toml"))
+    setup = load_testbed_config(DEFAULT_SETUP)
     scenario = parse_scenario(
         """
         name: Inline rule smoke
@@ -228,7 +229,7 @@ def test_inline_setup_rule_sheds_payload_on_low_battery() -> None:
 
 
 def test_obc_rules_file_overrides_the_setup_s_inline_rule(tmp_path: Path) -> None:
-    setup = load_testbed_config(Path("configs/default_satellite.toml"))
+    setup = load_testbed_config(DEFAULT_SETUP)
     scenario = parse_scenario(
         """
         name: Rules-file override smoke
@@ -344,8 +345,8 @@ def test_run_scenario_closes_the_transport_it_built(monkeypatch: pytest.MonkeyPa
     closed: list[object] = []
     monkeypatch.setattr(InMemoryBusAdapter, "close", lambda self: closed.append(self))
 
-    setup = load_testbed_config(Path("configs/default_satellite.toml"))
-    scenario = load_scenario(Path("configs/scenarios/low_battery.yaml"), setup=setup)
+    setup = load_testbed_config(DEFAULT_SETUP)
+    scenario = load_scenario(DEFAULT_SCENARIO, setup=setup)
     result = run_scenario(scenario, setup, output=StringIO())
 
     assert result.passed
