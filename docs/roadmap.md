@@ -55,10 +55,11 @@ unblock that user, highest first.
        changelog's versioning note and the `Development Status` trove
        classifier now all state the same thing: 1.0.0 is tagged, released and
        on PyPI.
-4. [ ] **A working install path from PyPI.** Every config and scenario currently
-       lives in the repository, so there is nothing to run after
-       `pip install cubesat-testbed`. Add `cubesat-testbed init` and/or ship the
-       examples in the wheel, then lead the README quickstart with that path.
+4. [x] **A working install path from PyPI.** The examples moved into
+       `cubesat_testbed.examples` and now ship in the wheel. `run --example NAME`
+       runs one in place and `init [DIR]` copies one out to edit, so
+       `pip install cubesat-testbed && cubesat-testbed run --example default`
+       produces a PASS with no clone. The README quickstart leads with that path.
 5. [ ] **Documented path to writing a custom module.** The architecture puts
        concrete subsystem behavior in modules, but there is no guide for
        building one. Add `docs/writing-a-module.md` plus a worked example — the

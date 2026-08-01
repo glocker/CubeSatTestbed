@@ -87,7 +87,7 @@ to binary payloads; no stateful "on enter/on exit" rules.
 
 Rules live in setup config under `[nodes.<obc-node>.rules.<name>]`, so the
 low-battery example above is not built into the engine — it is exactly what
-`configs/default_satellite.toml` declares:
+the packaged `default` example declares:
 
 ```toml
 [nodes.obc.rules.low_battery_shed_payload]
@@ -297,8 +297,8 @@ replays the project's committed golden-vector ping — the exact bytes official
 libcsp v2.1 puts on the wire — over `vcan0` and confirms `build_runtime`'s
 `SocketCanAdapter` receives and decodes it, and that a command frame arriving
 the same way reaches and mutates the correct simulated module through the
-full scenario runner delivery path. The same file also drives
-`configs/examples/socketcan_hil.toml` end to end through the CLI's own
+full scenario runner delivery path. The same file also drives the packaged
+`socketcan-hil` example end to end through the CLI's own
 `run --realtime` path, against a peer answering from outside the process on
 `vcan0`.
 
@@ -310,9 +310,9 @@ runtime through `build_runtime` keeps owning (and closing) that transport.
 ## Running scenarios from CLI
 
 ```sh
-uv run cubesat-testbed run \
-  --config configs/default_satellite.toml \
-  --scenario configs/scenarios/low_battery.yaml
+cubesat-testbed run \
+  --config setup.toml \
+  --scenario scenario.yaml
 ```
 
 Short flags (`-c`, `-s`) are also supported. By default, the command prints
@@ -349,6 +349,58 @@ Exit codes are intended for CI/CD use:
 If a scenario contains zero assertions, the CLI prints
 `warning: 0 assertions in scenario` to `stderr` so a vacuously passing run is
 visible in logs.
+
+### Packaged examples
+
+The example setups and scenarios are part of the distribution, not of the
+repository checkout: they live in `src/cubesat_testbed/examples/` and are
+installed with the package. Without that, `pip install cubesat-testbed` would
+deliver a CLI with nothing to feed it, and the PyPI publication would be inert.
+
+Each example is a directory holding exactly three files — `setup.toml`,
+`scenario.yaml`, and a `README.md` explaining what the pair demonstrates. v1
+ships three:
+
+| Example | What it shows |
+| --- | --- |
+| `default` | in-memory three-node satellite; OBC sheds the payload on a low battery |
+| `socketcan-hil` | the same run against a real bus: payload as `hardware` on SocketCAN `vcan0` |
+| `module-params` | retuning a built-in module through `[nodes.<node>.params]` |
+
+`run --example NAME` runs one in place, without naming any paths, so a fresh
+install is one command from a PASS. It replaces `--config`/`--scenario` rather
+than complementing them; combining the two is an error.
+
+```sh
+cubesat-testbed run --example default
+```
+
+`init [DIR]` copies an example out to be edited — the way to start a real
+setup of your own. `DIR` defaults to the working directory and is created if
+missing; `--example NAME` picks which one (default: `default`), `--list`
+prints the catalogue without writing anything, and existing files are never
+overwritten unless `--force` is given. The refusal is checked before any file
+is written, so a rejected `init` leaves the target directory exactly as it was.
+
+```sh
+cubesat-testbed init my-testbed
+```
+
+```text
+wrote my-testbed/setup.toml
+wrote my-testbed/scenario.yaml
+wrote my-testbed/README.md
+
+next: cubesat-testbed run --config my-testbed/setup.toml --scenario my-testbed/scenario.yaml
+```
+
+The `next:` line carries whatever flags that example needs — `--realtime` for
+`socketcan-hil` — so it can be pasted as printed.
+
+`init` failures use the same exit code `2` as any other execution error. The
+examples are also what the test suite runs against, and every example that
+does not require a real bus is asserted to pass, so a shipped example cannot
+rot unnoticed.
 
 ### Wire-level frame trace
 
@@ -397,10 +449,11 @@ determinism. From the Python API, pass a stream as `trace=` to `run_scenario`,
 command line, with no Python glue:
 
 ```sh
-uv run cubesat-testbed run \
+cubesat-testbed init hil --example socketcan-hil
+cubesat-testbed run \
   --realtime \
-  --config configs/examples/socketcan_hil.toml \
-  --scenario configs/scenarios/low_battery.yaml
+  --config hil/setup.toml \
+  --scenario hil/scenario.yaml
 ```
 
 The flag is independent of the transport: `--realtime` on the in-memory bus

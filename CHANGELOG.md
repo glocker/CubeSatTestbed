@@ -9,6 +9,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Runnable examples inside the package. `pip install cubesat-testbed` used to
+  install a CLI with nothing to feed it, because every setup and scenario
+  lived in the repository. They now ship in the wheel as
+  `cubesat_testbed.examples`, three of them: `default`, `socketcan-hil` and
+  `module-params`. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#packaged-examples).
+- `cubesat-testbed run --example NAME`: runs a packaged example in place,
+  without naming any paths, so a fresh install is one command away from a
+  PASS. It replaces `--config`/`--scenario`, which are no longer required
+  flags; combining the two is rejected.
+- `cubesat-testbed init [DIR]`: copies an example -- setup, scenario and a
+  README explaining them -- into `DIR` to edit, and prints the exact command
+  to run it, including any flags that example needs. `--example NAME` selects
+  one, `--list` shows the catalogue, and existing files are never overwritten
+  without `--force`. The check happens before any file is written, so a
+  refused `init` leaves the directory untouched.
 - `cubesat-testbed run --trace`: writes one decoded line per CAN frame to
   `stderr` -- virtual timestamp, direction, CSP v2 header fields, the raw CAN
   data and CSP payload bytes, and the configured command route or decoded
@@ -31,13 +47,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   through virtual time and never hear a real peer. It stays a warning, not an
   error, because a SocketCAN setup whose nodes are all `simulated` runs
   correctly unpaced.
-- `tests/test_hil_demo.py` now drives `configs/examples/socketcan_hil.toml`
+- `tests/test_hil_demo.py` now drives the `socketcan-hil` example
   end to end through the CLI itself, with an external peer answering on
   `vcan0` in real time, and pins the unpaced run's miss-plus-warning
   behaviour alongside it.
 
 ### Changed
 
+- The README quickstart leads with `pip install cubesat-testbed` and
+  `cubesat-testbed run --example default`; the clone-and-`uv sync` flow is now
+  the contributor route, documented in `CONTRIBUTING.md`.
+- The top-level `configs/` example files moved into
+  `src/cubesat_testbed/examples/`, each example a directory of `setup.toml`,
+  `scenario.yaml` and `README.md`. `configs/schema/module_schema.md` stays put.
+  The test suite addresses the examples through the package instead of through
+  `configs/` path literals, and so no longer depends on the directory pytest
+  is invoked from.
 - The README now states the shipped status -- 1.0.0, released and on PyPI --
   instead of `pre-v1, under active development`. The changelog's versioning
   note no longer promises SemVer "once the first tag is cut"; the tag exists.
