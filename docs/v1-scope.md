@@ -350,6 +350,44 @@ If a scenario contains zero assertions, the CLI prints
 `warning: 0 assertions in scenario` to `stderr` so a vacuously passing run is
 visible in logs.
 
+### Wire-level frame trace
+
+`--trace` writes one decoded line per CAN frame to `stderr`:
+
+```text
+trace t=4000000 TX can_id=0x10004103 dlc=8 pri=2 src=2 dst=2 dport=20 sport=20 flags=0x00 data=0009450041c80000 payload=41c80000 telemetry eps.telemetry.battery_percent=25.0
+trace t=4000000 RX can_id=0x10004103 dlc=8 pri=2 src=2 dst=2 dport=20 sport=20 flags=0x00 data=0009450041c80000 payload=41c80000 telemetry eps.telemetry.battery_percent=25.0
+trace t=4000000 TX can_id=0x10006083 dlc=5 pri=2 src=1 dst=3 dport=10 sport=10 flags=0x00 data=0004a28000 payload=00 command obc.payload_power_off->payload
+```
+
+Each line carries the virtual timestamp in microseconds, the direction, the
+extended CAN identifier, and the decoded CSP v2 header fields. `data` is the
+full CAN data field as `candump` would print it; `payload` is just the CSP
+application bytes after the 4-byte header extension. The trailing annotation
+names what the frame *is* according to the setup config: the command route it
+matches, or the telemetry signal decoded out of it through the same codec an
+assertion uses. A frame matching no configured route is marked `unrouted`, and
+one the CSP v2 codec rejects is reported as `undecodable=...` rather than
+dropped — an unexpected frame is usually why the trace was switched on.
+
+Tracing happens at the transport boundary, not inside the runner. Two
+consequences worth knowing:
+
+- A frame the testbed sends on the in-memory bus appears twice, as `TX` and
+  again as `RX` when the runner reads it back off the monitor stream and
+  decodes it. That round trip is precisely what makes an assertion an
+  observation of the wire rather than of module state (see
+  [Telemetry wire encoding](#telemetry-wire-encoding)).
+- On SocketCAN the adapter does not receive its own messages, so outgoing
+  frames appear only as `TX` and everything the peer sends appears as `RX`.
+  This is the only place an outgoing HIL command is visible at all.
+
+The trace goes to `stderr`, so it composes with `--json` and `--quiet` without
+corrupting machine-readable `stdout`. It is observability only: it does not
+touch the assertion path, and enabling it does not change scenario results or
+determinism. From the Python API, pass a stream as `trace=` to `run_scenario`,
+`run_scenario_files` or `build_runtime`.
+
 ### Hardware-in-the-loop from the CLI
 
 `--realtime` runs the scenario on a `RealTimeClock` instead of the default
