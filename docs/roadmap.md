@@ -75,7 +75,8 @@ unblock that user, highest first.
        and make this a standing step for every future tag.
 8. [ ] Record an asciinema demo of a run, including a deliberate failure and the
        resulting non-zero exit code. Worth recording only after item 2 lands.
-9. [ ] Add CI, PyPI, license and supported-Python badges to the README.
+9. [x] CI, PyPI, license and supported-Python badges on the README, landed
+       alongside item 3.
 
 ## Deferred
 

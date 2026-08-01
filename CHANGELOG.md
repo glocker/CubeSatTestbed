@@ -41,6 +41,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - The README now states the shipped status -- 1.0.0, released and on PyPI --
   instead of `pre-v1, under active development`. The changelog's versioning
   note no longer promises SemVer "once the first tag is cut"; the tag exists.
+- CI, PyPI, supported-Python and license badges on the README.
 - `Development Status` trove classifier raised from `4 - Beta` to
   `5 - Production/Stable`, matching the released 1.0.0. Reaches PyPI with the
   next release.

@@ -1,5 +1,10 @@
 # CubeSatTestbed
 
+[![CI](https://github.com/glocker/CubeSatTestbed/actions/workflows/ci.yml/badge.svg)](https://github.com/glocker/CubeSatTestbed/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/cubesat-testbed)](https://pypi.org/project/cubesat-testbed/)
+[![Python](https://img.shields.io/pypi/pyversions/cubesat-testbed)](https://pypi.org/project/cubesat-testbed/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 A modular CubeSat subsystem emulation and hardware-in-the-loop test framework.
 
 ![Project scheme](https://raw.githubusercontent.com/glocker/CubeSatTestbed/main/docs/images/scheme.png)
