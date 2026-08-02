@@ -13,7 +13,10 @@ A setup config defines:
 - `transport.interface` for `socketcan` (defaults to `vcan0`);
 - `nodes`: named subsystem slots such as `obc`, `eps`, `payload`;
 - each node's `mode`: `simulated`, `software`, or `hardware`;
-- simulated node `module_type`: `generic_eps`, `obc_peer`, or `simple_payload`;
+- simulated node `module_type`: any name registered in the module registry.
+  This package ships `generic_eps`, `obc_peer`, `simple_payload` and
+  `thermal_rc`; a module from another package registers its own name (see
+  [`docs/writing-a-module.md`](../../docs/writing-a-module.md));
 - unique CSP `address` values in the CSP v2 address range;
 - optional named command mappings under `nodes.<node>.commands`;
 - optional telemetry mappings under `nodes.<node>.telemetry`;
@@ -146,9 +149,13 @@ scenario runs. `name` and `endpoint` are derived from the node itself and must
 not be set through `params`. `obc_peer` does not accept `params`; its
 configuration is rules- and command-driven, not scalar parameters.
 
-A third-party module type registers itself in
-`cubesat_testbed.modules.registry.MODULE_PARAM_CONFIGS` to support `params`
-the same way the built-in modules do.
+A module type defined outside this package supports `params` the same way,
+by passing its config dataclass as `config_cls` to
+`cubesat_testbed.modules.registry.register_module`. Because registration
+happens on import, such a module must be imported before the config is
+parsed -- `cubesat-testbed run --module-import PACKAGE` from the CLI. An
+unregistered `module_type` fails setup validation with an error listing the
+registered names and pointing at that flag.
 
 ## Scenario YAML
 

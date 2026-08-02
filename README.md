@@ -36,7 +36,10 @@ config change, not a code change.
    EPS" can faithfully stand in for every real EPS board. The universal part
    is the engine: DUT/peer selection, protocol and transport adapters,
    deterministic scenario execution, fault injection and assertions. Concrete
-   subsystem behavior lives in modules.
+   subsystem behavior lives in modules — including yours: a module registered
+   from your own package is nameable in setup TOML, tunable, ticked and
+   observed over the bus exactly like the built-in ones. See
+   [`docs/writing-a-module.md`](docs/writing-a-module.md).
 2. **DUT + switchable node modes.** Every node is `simulated` (a module
    inside `cubesat_testbed` emulates the subsystem), `software` (an external
    implementation runs as a peer), or `hardware` (a real board through a bus
@@ -281,7 +284,9 @@ sudo ip link set up vcan0
 ## v1 scope at a glance
 
 - Protocol: CSP v2 only, single-frame, classic CAN 2.0, extended 29-bit IDs.
-- Modules: Generic EPS, OBC Peer (rule engine), Simple Payload.
+- Modules: Generic EPS, OBC Peer (rule engine), Simple Payload, RC thermal
+  node -- plus your own, registered the same way the built-ins are
+  ([`docs/writing-a-module.md`](docs/writing-a-module.md)).
 - Transports: in-memory (CI/tests) and SocketCAN (Linux HIL).
 - Deterministic virtual-time engine, TOML setup + YAML scenarios, PASS/FAIL
   CLI report with CI-friendly exit codes, JUnit XML output and a decoded
@@ -293,6 +298,7 @@ Full detail, constraints, and what's deliberately out of scope for v1:
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Writing a module](docs/writing-a-module.md)
 - [Product v1 scope](docs/v1-scope.md)
 - [Config schema reference](configs/schema/module_schema.md)
 - [CSP golden vectors](tests/golden_vectors/README.md)
