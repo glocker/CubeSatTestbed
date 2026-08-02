@@ -43,7 +43,13 @@ from cubesat_testbed.protocol.csp_v2 import CspCanFrame, CspFields, CspV2CodecEr
 from cubesat_testbed.transport.base import EndpointId, TransportAdapter, TransportEnvelope
 
 if TYPE_CHECKING:
-    from cubesat_testbed.config import TestbedConfig
+    from cubesat_testbed.config import (
+        ObcRule,
+        ObcRuleCommandAction,
+        ObcRuleFaultAction,
+        TestbedConfig,
+    )
+    from cubesat_testbed.modules.registry import ModuleBuildContext
 
 BytesLike: TypeAlias = bytes | bytearray | memoryview
 FaultActionResult: TypeAlias = ActiveOverride | NamedFaultFlag | None
@@ -506,6 +512,67 @@ class ObcPeerModule(SimulatedModule):
         return 0
 
 
+def build_obc_peer(context: ModuleBuildContext) -> ObcPeerModule:
+    """Registry factory for the ``obc_peer`` module type.
+
+    The OBC Peer is the one built-in that needs the runtime itself rather than
+    just its own params: it emits commands through the transport and observes
+    telemetry events on the engine, so it is built last and attached here.
+    """
+
+    rules = obc_peer_rules_from_config(context.node.rules)
+    if context.obc_rules is not None and context.node_name in context.obc_rules:
+        rules = tuple(context.obc_rules[context.node_name])
+
+    module = ObcPeerModule.from_testbed_config(
+        context.setup,
+        source_node=context.node_name,
+        rules=rules,
+        transport=context.transport,
+        fault_engine=context.fault_engine,
+    )
+    module.attach(context.engine)
+    return module
+
+
+def obc_peer_rules_from_config(rules: Mapping[str, ObcRule]) -> tuple[ObcPeerRule, ...]:
+    """Convert validated config rules into runtime :class:`ObcPeerRule`s.
+
+    The config layer deliberately does not import this package, so the
+    translation between the two rule shapes lives here, next to the runtime
+    one, and is shared by inline ``[nodes.<node>.rules.*]`` and standalone
+    rules files.
+    """
+
+    return tuple(obc_peer_rule_from_config(name, rule) for name, rule in rules.items())
+
+
+def obc_peer_rule_from_config(name: str, rule: ObcRule) -> ObcPeerRule:
+    """Convert one validated config ``ObcRule`` into a runtime ``ObcPeerRule``."""
+
+    return ObcPeerRule(
+        name=name,
+        condition=ObcPeerThresholdCondition(rule.signal, rule.op, rule.threshold),
+        actions=tuple(_rule_action_from_config(action) for action in rule.actions),
+        for_duration=rule.for_duration,
+        cooldown=rule.cooldown,
+    )
+
+
+def _rule_action_from_config(
+    action: ObcRuleCommandAction | ObcRuleFaultAction,
+) -> ObcPeerRuleAction:
+    if action.type == "send_command":
+        return ObcPeerCommandAction(action.command)
+    return ObcPeerFaultAction(
+        fault_type=action.fault_type.value,
+        target=action.target,
+        value=action.value,
+        duration=action.duration,
+        cycles=action.cycles,
+    )
+
+
 def obc_peer_commands_from_testbed_config(
     setup: TestbedConfig,
     source_node: str = "obc",
@@ -643,5 +710,8 @@ __all__ = [
     "ObcPeerRuleResult",
     "ObcPeerThresholdCondition",
     "ThresholdOperator",
+    "build_obc_peer",
     "obc_peer_commands_from_testbed_config",
+    "obc_peer_rule_from_config",
+    "obc_peer_rules_from_config",
 ]

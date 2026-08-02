@@ -102,11 +102,20 @@ class NodeMode(str, Enum):
 
 
 class ModuleType(str, Enum):
-    """Built-in simulated module types in product v1."""
+    """Names of the simulated module types shipped in this package.
+
+    These are constants, not the validation gate: a node's ``module_type`` is
+    checked against
+    :mod:`cubesat_testbed.modules.registry`, which a module defined outside
+    this package extends through ``register_module`` (see
+    ``docs/writing-a-module.md``). A third-party type is therefore a valid
+    ``module_type`` without appearing here.
+    """
 
     GENERIC_EPS = "generic_eps"
     OBC_PEER = "obc_peer"
     SIMPLE_PAYLOAD = "simple_payload"
+    THERMAL_RC = "thermal_rc"
 
 
 class FaultType(str, Enum):
@@ -360,11 +369,35 @@ class NodeConfig(BaseModel):
 
     mode: NodeMode
     address: CspAddress
-    module_type: ModuleType | None = None
+    module_type: str | None = None
+    """A module type registered in :mod:`cubesat_testbed.modules.registry`.
+
+    Typed as a plain string rather than :class:`ModuleType` on purpose: the
+    registry, not this schema, decides which module types exist, so a
+    third-party module is configurable here without this package knowing its
+    name. Registration happens on import, so such a module must be imported
+    before the config is parsed.
+    """
+
     commands: dict[str, CommandMapping] = Field(default_factory=dict)
     telemetry: dict[str, TelemetryMapping] = Field(default_factory=dict)
     rules: dict[str, ObcRule] = Field(default_factory=dict)
     params: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("module_type")
+    @classmethod
+    def _validate_module_type(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        # Imported lazily for the same reason as _validate_params below: the
+        # modules package transitively imports this one.
+        from cubesat_testbed.modules.registry import ModuleRegistryError, module_registration
+
+        try:
+            module_registration(value)
+        except ModuleRegistryError as exc:
+            raise ValueError(str(exc)) from exc
+        return value
 
     @model_validator(mode="after")
     def _validate_mode_module_combination(self) -> Self:
@@ -372,7 +405,7 @@ class NodeConfig(BaseModel):
             raise ValueError("simulated nodes must declare module_type")
         if self.mode is not NodeMode.SIMULATED and self.module_type is not None:
             raise ValueError("module_type is only valid for simulated nodes")
-        if self.rules and self.module_type is not ModuleType.OBC_PEER:
+        if self.rules and self.module_type != ModuleType.OBC_PEER.value:
             raise ValueError("rules is only valid for module_type = 'obc_peer'")
         if self.mode is not NodeMode.SIMULATED and self.params:
             raise ValueError("params is only valid for simulated nodes")
@@ -386,17 +419,14 @@ class NodeConfig(BaseModel):
         # transport.factory -> cubesat_testbed.config) so a top-level import
         # here would be circular at package-load time. By the time any config
         # is actually parsed, the whole package has already loaded.
-        from cubesat_testbed.modules.registry import MODULE_PARAM_CONFIGS
+        from cubesat_testbed.modules.registry import module_registration
 
         # Guaranteed non-None: params is non-empty only when mode is
         # SIMULATED, and SIMULATED requires module_type (checked above).
         assert self.module_type is not None
-        try:
-            config_cls = MODULE_PARAM_CONFIGS[self.module_type.value]
-        except KeyError:
-            raise ValueError(
-                f"module_type {self.module_type.value!r} does not accept params"
-            ) from None
+        config_cls = module_registration(self.module_type).config_cls
+        if config_cls is None:
+            raise ValueError(f"module_type {self.module_type!r} does not accept params")
 
         reserved = _RESERVED_PARAM_NAMES & self.params.keys()
         if reserved:
@@ -412,9 +442,7 @@ class NodeConfig(BaseModel):
         try:
             config_cls(name="params-check", **self.params)
         except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"invalid params for module_type {self.module_type.value!r}: {exc}"
-            ) from exc
+            raise ValueError(f"invalid params for module_type {self.module_type!r}: {exc}") from exc
 
 
 class TestbedConfig(BaseModel):

@@ -9,6 +9,55 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- A documented, tested path to writing your own subsystem module:
+  [`docs/writing-a-module.md`](docs/writing-a-module.md). It covers the
+  module/FSM contract, the config dataclass that doubles as the
+  `[nodes.<node>.params]` schema, the model/telemetry split that makes fault
+  injection work, telemetry wire layouts, registration, and closing a control
+  loop over the bus.
+- `thermal_rc`, a lumped-capacitance (RC) thermal module with a commandable
+  heater, three named faults (`heater_stuck_off`, `heater_stuck_on`,
+  `radiator_degraded`) and a config that refuses an integration step long
+  enough to make explicit Euler oscillate. It is the worked example behind the
+  document above and the fourth built-in module.
+- The `thermal-heater` packaged example: an OBC heater loop that closes
+  entirely over the CSP bus -- telemetry out, rule, command back in -- with no
+  Python wiring between the two modules.
+- `cubesat-testbed run --module-import MODULE`: imports a Python module before
+  the setup config is parsed, so the module types it registers can be named as
+  `module_type` values. Repeatable, and the working directory is importable, so
+  a plain `my_modules.py` next to `setup.toml` works without packaging
+  anything.
+
+### Changed
+
+- `cubesat_testbed.modules.registry` is now a real extension point rather than
+  a params-validation table. `register_module(module_type, factory, ...)`
+  registers a module type's factory, its `params` config class and its build
+  order; `build_runtime` constructs every module through it. The modules that
+  ship in the package are registered through the same public call, so a
+  third-party module type is nameable in setup TOML, tunable through `params`,
+  built, ticked and observed over the bus with no change to this package.
+  Previously `module_type` was a closed enum with hardcoded construction in
+  `build_runtime`, which made the documented third-party path unreachable.
+- `NodeConfig.module_type` and `NodeParticipant.module_type` are now `str`
+  rather than `ModuleType`. `ModuleType` remains as the constants for the
+  module types that ship here; because it is a `str` enum, existing
+  comparisons against it keep working.
+- `ObcRule`-to-`ObcPeerRule` conversion moved from `scenario/runner.py` to
+  `modules/obc_peer.py` as `obc_peer_rules_from_config`, next to the runtime
+  type it produces.
+- `build_runtime` attaches the runtime's `FaultInjectionEngine` to a module
+  whose factory did not pass one. Without it, every state override, signal
+  override and named fault against that node silently did nothing, so a
+  scenario would pass or fail for the wrong reason.
+- A module now only needs `telemetry()` for the runner to encode its values
+  onto the bus; `emit_telemetry()` is no longer also required. It is never
+  called by the runner, and requiring it silently excluded otherwise correct
+  modules from publishing anything.
+
+### Added
+
 - Runnable examples inside the package. `pip install cubesat-testbed` used to
   install a CLI with nothing to feed it, because every setup and scenario
   lived in the repository. They now ship in the wheel as

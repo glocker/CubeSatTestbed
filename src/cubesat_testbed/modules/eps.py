@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from cubesat_testbed.engine import CommandPayload, DiscreteEventEngine, VirtualTime
 from cubesat_testbed.fault_injection import FaultInjectionEngine
@@ -20,16 +21,20 @@ from cubesat_testbed.modules.base import (
     TelemetrySample,
     _clamp,
     _coerce_bool_value,
-    _coerce_finite_float_value,
     _coerce_non_negative_float_value,
     _coerce_non_negative_int_value,
     _coerce_percentage_value,
+    _coerce_positive_float_value,
+    _coerce_unit_interval_exclusive_zero,
     _validate_identifier,
     _validate_optional_endpoint,
     normalize_command,
 )
 from cubesat_testbed.modules.payload import SimplePayloadModule
 from cubesat_testbed.transport.base import EndpointId
+
+if TYPE_CHECKING:
+    from cubesat_testbed.modules.registry import ModuleBuildContext
 
 EPS_PAYLOAD_RAIL_ON_COMMAND = "eps_payload_rail_on"
 EPS_PAYLOAD_RAIL_OFF_COMMAND = "eps_payload_rail_off"
@@ -95,12 +100,12 @@ class GenericEpsConfig:
         object.__setattr__(
             self,
             "battery_capacity_wh",
-            _coerce_positive_float("battery_capacity_wh", self.battery_capacity_wh),
+            _coerce_positive_float_value("battery_capacity_wh", self.battery_capacity_wh),
         )
         object.__setattr__(
             self,
             "tick_seconds",
-            _coerce_positive_float("tick_seconds", self.tick_seconds),
+            _coerce_positive_float_value("tick_seconds", self.tick_seconds),
         )
         object.__setattr__(
             self,
@@ -524,6 +529,22 @@ class GenericEpsModule(SimulatedModule):
         return 100.0
 
 
+def build_generic_eps(context: ModuleBuildContext) -> GenericEpsModule:
+    """Registry factory for the ``generic_eps`` module type.
+
+    The EPS switches a payload's power rail, so it is registered one build
+    order later than ``simple_payload`` and picks that module up here. Wiring
+    by type rather than by a configured node name is a v1 simplification: a
+    setup with two payloads attaches the first one.
+    """
+
+    return GenericEpsModule(
+        context.module_config(GenericEpsConfig),
+        payload=context.first_module_of_type(SimplePayloadModule),
+        fault_engine=context.fault_engine,
+    )
+
+
 def _extract_power_mode(payload: object) -> EpsPowerMode:
     if isinstance(payload, Mapping):
         try:
@@ -545,20 +566,6 @@ def _coerce_power_mode(value: object) -> EpsPowerMode:
     raise ModuleError("EPS power mode must be a string or EpsPowerMode")
 
 
-def _coerce_positive_float(kind: str, value: object) -> float:
-    number = _coerce_non_negative_float_value(kind, value)
-    if number == 0.0:
-        raise ModuleError(f"{kind} must be positive")
-    return number
-
-
-def _coerce_unit_interval_exclusive_zero(kind: str, value: object) -> float:
-    number = _coerce_finite_float_value(kind, value)
-    if not 0.0 < number <= 1.0:
-        raise ModuleError(f"{kind} must be in range (0, 1]")
-    return number
-
-
 __all__ = [
     "EPS_BATTERY_CELL_DEAD_FAULT",
     "EPS_BUS_UNDERVOLTAGE_FAULT",
@@ -576,4 +583,5 @@ __all__ = [
     "GenericEpsConfig",
     "GenericEpsModule",
     "GenericEpsState",
+    "build_generic_eps",
 ]

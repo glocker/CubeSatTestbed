@@ -12,7 +12,7 @@ import warnings
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, TextIO, TypeVar, cast, runtime_checkable
+from typing import Protocol, TextIO, runtime_checkable
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from cubesat_testbed.clock import Clock, VirtualClock
@@ -22,10 +22,6 @@ from cubesat_testbed.config import (
     FaultType,
     InjectFaultStep,
     InMemoryTransportConfig,
-    ModuleType,
-    ObcRule,
-    ObcRuleCommandAction,
-    ObcRuleFaultAction,
     ScenarioScript,
     SendCommandStep,
     TelemetryMapping,
@@ -46,18 +42,13 @@ from cubesat_testbed.engine import (
 )
 from cubesat_testbed.fault_injection import FaultInjectionEngine
 from cubesat_testbed.modules import (
-    GenericEpsConfig,
-    GenericEpsModule,
-    ObcPeerCommandAction,
-    ObcPeerFaultAction,
-    ObcPeerModule,
+    ModuleBuildContext,
+    ModuleRegistration,
+    ModuleRegistryError,
     ObcPeerRule,
-    ObcPeerRuleAction,
-    ObcPeerThresholdCondition,
-    SimplePayloadConfig,
-    SimplePayloadModule,
     SimulatedModule,
-    TelemetrySample,
+    module_registration,
+    obc_peer_rule_from_config,
 )
 from cubesat_testbed.protocol.csp_v2 import CspFields, DecodedCspPacket, decode_frame, pack
 from cubesat_testbed.protocol.telemetry_codec import (
@@ -78,8 +69,6 @@ from cubesat_testbed.transport import (
     TransportEnvelope,
     build_transport_adapter,
 )
-
-_ModuleT = TypeVar("_ModuleT", bound=SimulatedModule)
 
 _PHYSICAL_STEP_US: VirtualTime = 1_000_000
 """Fixed cadence, in microseconds, of the runner's tick/telemetry/cycle step.
@@ -111,17 +100,16 @@ class _CommandHandlingModule(Protocol):
 
 
 @runtime_checkable
-class _TelemetryEmitterModule(Protocol):
-    def telemetry(self, *, now: VirtualTime | None = None) -> dict[str, object]: ...
+class _TelemetryReportingModule(Protocol):
+    """A module whose current values the runner can encode into frames.
 
-    def emit_telemetry(
-        self,
-        engine: DiscreteEventEngine,
-        *,
-        names: Iterable[str] | None = None,
-        delay: VirtualTime = 0,
-        source: EndpointId | None = None,
-    ) -> tuple[TelemetrySample, ...]: ...
+    Deliberately only ``telemetry``: that is all the runner calls, and a
+    protocol demanding more would silently exclude an otherwise correct
+    module from publishing anything. ``emit_telemetry``, which schedules
+    samples straight onto the engine, is for Python-API callers.
+    """
+
+    def telemetry(self, *, now: VirtualTime | None = None) -> dict[str, object]: ...
 
 
 @runtime_checkable
@@ -530,7 +518,7 @@ class ScenarioRunner:
             if node_name not in self.runtime.modules:
                 continue  # hardware/software node telemetry is observed from the bus, not self-generated
             module = self.runtime.module(node_name)
-            if not isinstance(module, _TelemetryEmitterModule):
+            if not isinstance(module, _TelemetryReportingModule):
                 continue
             values = module.telemetry(now=self.runtime.engine.now)
             for field_name in self.runtime.telemetry_fields_by_node[node_name]:
@@ -794,41 +782,37 @@ def build_runtime(
         )
     participants = resolve_participants(setup)
 
+    # Both the construction order and the per-tick order come from the module
+    # registry, so a module type this package has never heard of takes part in
+    # exactly the same way a built-in does.
+    build_order = _build_order(setup, participants)
+    normalized_obc_rules = (
+        None if obc_rules is None else {node: tuple(rules) for node, rules in obc_rules.items()}
+    )
+
     modules: dict[str, SimulatedModule] = {}
-
-    for node_name, node in setup.nodes.items():
-        if participants[node_name].is_simulated and node.module_type is ModuleType.SIMPLE_PAYLOAD:
-            # node.params is validated by NodeConfig against this exact dataclass
-            # already (config/parser.py); the cast only tells mypy what runtime
-            # validation already guarantees.
-            params = cast("dict[str, Any]", node.params)
-            modules[node_name] = SimplePayloadModule(
-                SimplePayloadConfig(name=node_name, endpoint=node.address, **params),
+    for node_name, registration in build_order:
+        module = registration.factory(
+            ModuleBuildContext(
+                setup=setup,
+                node_name=node_name,
+                node=setup.nodes[node_name],
+                engine=engine,
                 fault_engine=fault_engine,
-            )
-
-    first_payload = _first_module_of_type(modules, SimplePayloadModule)
-    for node_name, node in setup.nodes.items():
-        if participants[node_name].is_simulated and node.module_type is ModuleType.GENERIC_EPS:
-            params = cast("dict[str, Any]", node.params)
-            modules[node_name] = GenericEpsModule(
-                GenericEpsConfig(name=node_name, endpoint=node.address, **params),
-                payload=first_payload,
-                fault_engine=fault_engine,
-            )
-
-    for node_name, node in setup.nodes.items():
-        if participants[node_name].is_simulated and node.module_type is ModuleType.OBC_PEER:
-            rules = _rules_for_obc_node(setup, node_name, obc_rules=obc_rules)
-            obc = ObcPeerModule.from_testbed_config(
-                setup,
-                source_node=node_name,
-                rules=rules,
                 transport=transport,
-                fault_engine=fault_engine,
+                modules=modules,
+                obc_rules=normalized_obc_rules,
             )
-            obc.attach(engine)
-            modules[node_name] = obc
+        )
+        if module.fault_engine is None:
+            # A factory that forgot `fault_engine=context.fault_engine` would
+            # otherwise produce a module on which every state override, signal
+            # override and named fault silently does nothing -- a scenario that
+            # passes or fails for the wrong reason, which is worse than one that
+            # errors. Attaching it here makes fault injection work for every
+            # module in a runtime, including third-party ones.
+            module.set_fault_engine(fault_engine)
+        modules[node_name] = module
 
     for node_name, participant in participants.items():
         if participant.is_simulated and node_name not in modules:
@@ -836,7 +820,7 @@ def build_runtime(
 
     telemetry_routes_by_signal = {route.signal: route for route in telemetry_routes}
     telemetry_fields_by_node, telemetry_order = _telemetry_plan_from_routes(telemetry_routes)
-    tick_order = _build_tick_order(setup, modules)
+    tick_order = tuple(node_name for node_name, _registration in build_order)
 
     return ScenarioRuntime(
         setup=setup,
@@ -934,7 +918,7 @@ def build_obc_rules_from_file(path: str | Path) -> dict[str, tuple[ObcPeerRule, 
 
     rules_by_node = load_obc_rules_file(path)
     return {
-        node_name: tuple(_build_obc_peer_rule(name, rule) for name, rule in rules.items())
+        node_name: tuple(obc_peer_rule_from_config(name, rule) for name, rule in rules.items())
         for node_name, rules in rules_by_node.items()
     }
 
@@ -1060,67 +1044,30 @@ def _telemetry_plan_from_routes(
     return {node: tuple(fields) for node, fields in fields_by_node.items()}, tuple(order)
 
 
-def _build_tick_order(
-    setup: TestbedConfig, modules: Mapping[str, SimulatedModule]
-) -> tuple[str, ...]:
-    candidates = [node_name for node_name in setup.nodes if node_name in modules]
-    return tuple(sorted(candidates, key=lambda name: _tick_rank(setup.nodes[name].module_type)))
-
-
-def _tick_rank(module_type: ModuleType | None) -> int:
-    if module_type is ModuleType.SIMPLE_PAYLOAD:
-        return 0
-    if module_type is ModuleType.GENERIC_EPS:
-        return 1
-    return 2
-
-
-def _rules_for_obc_node(
+def _build_order(
     setup: TestbedConfig,
-    node_name: str,
-    *,
-    obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None,
-) -> tuple[ObcPeerRule, ...]:
-    if obc_rules is not None and node_name in obc_rules:
-        return tuple(obc_rules[node_name])
-    node = setup.nodes[node_name]
-    return tuple(_build_obc_peer_rule(name, rule) for name, rule in node.rules.items())
+    participants: Mapping[str, NodeParticipant],
+) -> tuple[tuple[str, ModuleRegistration], ...]:
+    """Return the simulated nodes to build, in registry build order.
 
+    Sorting is stable, so nodes sharing a ``build_order`` keep the order they
+    appear in the setup file -- the run stays reproducible from the config
+    alone rather than depending on registration or dictionary order.
+    """
 
-def _build_obc_peer_rule(name: str, rule: ObcRule) -> ObcPeerRule:
-    """Convert one validated config ``ObcRule`` into a runtime ``ObcPeerRule``."""
-
-    return ObcPeerRule(
-        name=name,
-        condition=ObcPeerThresholdCondition(rule.signal, rule.op, rule.threshold),
-        actions=tuple(_build_obc_peer_rule_action(action) for action in rule.actions),
-        for_duration=rule.for_duration,
-        cooldown=rule.cooldown,
-    )
-
-
-def _build_obc_peer_rule_action(
-    action: ObcRuleCommandAction | ObcRuleFaultAction,
-) -> ObcPeerRuleAction:
-    if isinstance(action, ObcRuleCommandAction):
-        return ObcPeerCommandAction(action.command)
-    return ObcPeerFaultAction(
-        fault_type=action.fault_type.value,
-        target=action.target,
-        value=action.value,
-        duration=action.duration,
-        cycles=action.cycles,
-    )
-
-
-def _first_module_of_type(
-    modules: Mapping[str, SimulatedModule],
-    module_type: type[_ModuleT],
-) -> _ModuleT | None:
-    for module in modules.values():
-        if isinstance(module, module_type):
-            return module
-    return None
+    candidates: list[tuple[str, ModuleRegistration]] = []
+    for node_name, node in setup.nodes.items():
+        if not participants[node_name].is_simulated:
+            continue
+        # Guaranteed non-None: simulated nodes must declare module_type, and
+        # that name was validated against the registry when the config parsed.
+        assert node.module_type is not None
+        try:
+            registration = module_registration(node.module_type)
+        except ModuleRegistryError as exc:
+            raise ScenarioRuntimeError(str(exc)) from exc
+        candidates.append((node_name, registration))
+    return tuple(sorted(candidates, key=lambda entry: entry[1].build_order))
 
 
 def _split_telemetry_signal(signal: str) -> tuple[str, str]:

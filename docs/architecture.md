@@ -22,9 +22,10 @@ src/cubesat_testbed/
   transport/in_memory.py  # CI/local in-memory bus
   transport/socketcan.py  # Linux SocketCAN adapter
   modules/base.py         # Module/FSM contract
-  modules/registry.py     # module_type -> config dataclass extension point
+  modules/registry.py     # module_type registry: factories, params, build order
   modules/eps.py          # Generic EPS model
   modules/payload.py      # Simple payload model
+  modules/thermal.py      # RC thermal node with a commandable heater
   modules/obc_peer.py     # Stateless OBC rule engine
 ```
 
@@ -62,6 +63,13 @@ src/cubesat_testbed/
    - Subsystems are isolated finite state machines.
    - They react to events and scheduled timers.
    - They do not run independent polling loops.
+   - Every module type -- built-in or third-party -- is registered in
+     `modules/registry.py` through `register_module`, which supplies the
+     factory `build_runtime` calls, the dataclass validating that type's
+     `[nodes.<node>.params]`, and its build/tick order. The modules shipped
+     here are registered from one place only so importing the registry
+     resolves every shipped name; they have no privileged construction path.
+     See [`docs/writing-a-module.md`](writing-a-module.md).
 
 5. **Scenario runner** (`cubesat_testbed.scenario`)
    - `build_runtime` builds a runtime from any setup config, in-memory or

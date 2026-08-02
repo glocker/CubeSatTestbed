@@ -1,4 +1,10 @@
-"""Built-in deterministic subsystem modules."""
+"""Deterministic subsystem modules and the registry that makes them pluggable.
+
+The modules here are the ones this package ships. They are not privileged:
+each is registered under a ``module_type`` name through
+:func:`cubesat_testbed.modules.registry.register_module`, the same call a
+module defined in another package makes. See ``docs/writing-a-module.md``.
+"""
 
 from cubesat_testbed.modules.base import (
     ModuleCommandError,
@@ -25,6 +31,7 @@ from cubesat_testbed.modules.eps import (
     GenericEpsConfig,
     GenericEpsModule,
     GenericEpsState,
+    build_generic_eps,
 )
 from cubesat_testbed.modules.obc_peer import (
     ObcPeerActionResult,
@@ -38,7 +45,10 @@ from cubesat_testbed.modules.obc_peer import (
     ObcPeerRuleResult,
     ObcPeerThresholdCondition,
     ThresholdOperator,
+    build_obc_peer,
     obc_peer_commands_from_testbed_config,
+    obc_peer_rule_from_config,
+    obc_peer_rules_from_config,
 )
 from cubesat_testbed.modules.payload import (
     PAYLOAD_CAPTURE_ONCE_COMMAND,
@@ -52,10 +62,40 @@ from cubesat_testbed.modules.payload import (
     SimplePayloadConfig,
     SimplePayloadModule,
     SimplePayloadState,
+    build_simple_payload,
 )
-from cubesat_testbed.modules.registry import MODULE_PARAM_CONFIGS
+from cubesat_testbed.modules.registry import (
+    BUILD_ORDER_CONSUMER,
+    BUILD_ORDER_INDEPENDENT,
+    BUILD_ORDER_SUPERVISOR,
+    MODULE_PARAM_CONFIGS,
+    ModuleBuildContext,
+    ModuleFactory,
+    ModuleRegistration,
+    ModuleRegistryError,
+    module_registration,
+    register_module,
+    registered_module_types,
+    registrations_in_build_order,
+    unregister_module,
+)
+from cubesat_testbed.modules.thermal import (
+    THERMAL_HEATER_OFF_COMMAND,
+    THERMAL_HEATER_ON_COMMAND,
+    THERMAL_HEATER_STUCK_OFF_FAULT,
+    THERMAL_HEATER_STUCK_ON_FAULT,
+    THERMAL_RADIATOR_DEGRADED_FAULT,
+    HeaterStatus,
+    ThermalRcConfig,
+    ThermalRcModule,
+    ThermalRcState,
+    build_thermal_rc,
+)
 
 __all__ = [
+    "BUILD_ORDER_CONSUMER",
+    "BUILD_ORDER_INDEPENDENT",
+    "BUILD_ORDER_SUPERVISOR",
     "EPS_BATTERY_CELL_DEAD_FAULT",
     "EPS_BUS_UNDERVOLTAGE_FAULT",
     "EPS_PAYLOAD_RAIL_OFF_COMMAND",
@@ -76,13 +116,23 @@ __all__ = [
     "PAYLOAD_POWER_ON_COMMAND",
     "PAYLOAD_START_CAPTURE_COMMAND",
     "PAYLOAD_STOP_CAPTURE_COMMAND",
+    "THERMAL_HEATER_OFF_COMMAND",
+    "THERMAL_HEATER_ON_COMMAND",
+    "THERMAL_HEATER_STUCK_OFF_FAULT",
+    "THERMAL_HEATER_STUCK_ON_FAULT",
+    "THERMAL_RADIATOR_DEGRADED_FAULT",
     "EpsPowerMode",
     "GenericEpsConfig",
     "GenericEpsModule",
     "GenericEpsState",
+    "HeaterStatus",
+    "ModuleBuildContext",
     "ModuleCommandError",
     "ModuleCommandRequest",
     "ModuleError",
+    "ModuleFactory",
+    "ModuleRegistration",
+    "ModuleRegistryError",
     "ObcPeerActionResult",
     "ObcPeerCommandAction",
     "ObcPeerConfig",
@@ -99,7 +149,21 @@ __all__ = [
     "SimplePayloadState",
     "SimulatedModule",
     "TelemetrySample",
+    "ThermalRcConfig",
+    "ThermalRcModule",
+    "ThermalRcState",
     "ThresholdOperator",
+    "build_generic_eps",
+    "build_obc_peer",
+    "build_simple_payload",
+    "build_thermal_rc",
+    "module_registration",
     "normalize_command",
     "obc_peer_commands_from_testbed_config",
+    "obc_peer_rule_from_config",
+    "obc_peer_rules_from_config",
+    "register_module",
+    "registered_module_types",
+    "registrations_in_build_order",
+    "unregister_module",
 ]

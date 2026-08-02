@@ -33,23 +33,42 @@ but the v1 protocol layer is CSP v2 only.
 
 ## Modules
 
-v1 ships three simulated modules:
+The package ships four simulated modules:
 
-- **Generic EPS** — battery/load/power-mode behavior and EPS telemetry.
-- **OBC Peer** — stateless rule-engine mock OBC.
-- **Simple Payload** — basic power draw and command/data-volume behavior.
+- **Generic EPS** (`generic_eps`) — battery/load/power-mode behavior and EPS
+  telemetry.
+- **OBC Peer** (`obc_peer`) — stateless rule-engine mock OBC.
+- **Simple Payload** (`simple_payload`) — basic power draw and command/
+  data-volume behavior.
+- **Thermal** (`thermal_rc`) — lumped-capacitance RC node with a commandable
+  heater.
 
-Stretch / later: **Thermal** (simple RC-style model), **ADCS** (attitude
-dynamics are intentionally out of v1 scope).
+**ADCS** remains out of scope: attitude dynamics are a different class of
+model from anything above.
 
-Each built-in module's tunable physical parameters (battery capacity,
-power-mode thresholds, and so on) are overridable per node through an optional
-`[nodes.<node>.params]` TOML table, validated against that module's own
-configuration object — see
+Each module's tunable physical parameters (battery capacity, power-mode
+thresholds, heat capacity, and so on) are overridable per node through an
+optional `[nodes.<node>.params]` TOML table, validated against that module's
+own configuration object — see
 [`configs/schema/module_schema.md`](../configs/schema/module_schema.md#module-parameters).
-Third-party module types register in
-`cubesat_testbed.modules.registry.MODULE_PARAM_CONFIGS` to support the same
-mechanism.
+
+### Modules are the extension point
+
+The list above is what ships, not what is possible. No `generic_eps` will match
+a specific real EPS board, so writing a module is expected to be the first
+serious thing a user does. `cubesat_testbed.modules.registry.register_module`
+takes a `module_type` name, the factory `build_runtime` calls to construct it,
+the dataclass that validates its `params`, and its build/tick order. The four
+modules above are registered through that same public call and get no
+privileged treatment: a module registered from another package is nameable in
+setup TOML, tunable, built, ticked, commanded and observed over the bus
+identically.
+
+Registration happens on import, and `module_type` is validated when the setup
+config is parsed, so a module defined elsewhere must be imported first —
+`cubesat-testbed run --module-import PACKAGE` from the CLI, or a plain import
+from the Python API. The full walkthrough is
+[`docs/writing-a-module.md`](writing-a-module.md).
 
 ## Fault injection
 
@@ -358,14 +377,14 @@ installed with the package. Without that, `pip install cubesat-testbed` would
 deliver a CLI with nothing to feed it, and the PyPI publication would be inert.
 
 Each example is a directory holding exactly three files — `setup.toml`,
-`scenario.yaml`, and a `README.md` explaining what the pair demonstrates. v1
-ships three:
+`scenario.yaml`, and a `README.md` explaining what the pair demonstrates:
 
 | Example | What it shows |
 | --- | --- |
 | `default` | in-memory three-node satellite; OBC sheds the payload on a low battery |
 | `socketcan-hil` | the same run against a real bus: payload as `hardware` on SocketCAN `vcan0` |
 | `module-params` | retuning a built-in module through `[nodes.<node>.params]` |
+| `thermal-heater` | an OBC heater loop closing over the bus; companion to [`docs/writing-a-module.md`](writing-a-module.md) |
 
 `run --example NAME` runs one in place, without naming any paths, so a fresh
 install is one command from a PASS. It replaces `--config`/`--scenario` rather
@@ -401,6 +420,30 @@ The `next:` line carries whatever flags that example needs — `--realtime` for
 examples are also what the test suite runs against, and every example that
 does not require a real bus is asserted to pass, so a shipped example cannot
 rot unnoticed.
+
+### Loading modules from outside the package
+
+A `module_type` exists only once the Python module registering it has been
+imported, and `module_type` is validated while the setup config is parsed.
+`--module-import MODULE` imports one before that happens:
+
+```sh
+cubesat-testbed run --module-import my_modules -c setup.toml -s scenario.yaml
+```
+
+The flag is repeatable. The working directory is prepended to `sys.path`
+first, deliberately: a console script otherwise puts its own `bin` directory
+there rather than the caller's, and a `my_modules.py` sitting next to
+`setup.toml` — the layout `init` produces — would not be importable. Nothing
+is auto-discovered: entry-point scanning would make a run's result depend on
+what happens to be installed in the environment, which is exactly the kind of
+implicit input this project keeps out of a scenario run.
+
+An import failure, and a `module_type` that no import registered, are both
+ordinary execution errors (exit code `2`, honoured by `--json`). The unknown
+`module_type` message lists the registered names and points at this flag.
+
+See [`docs/writing-a-module.md`](writing-a-module.md) for the module side.
 
 ### Wire-level frame trace
 

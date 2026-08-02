@@ -259,6 +259,20 @@ def _coerce_non_negative_float_value(kind: str, value: object) -> float:
     return number
 
 
+def _coerce_positive_float_value(kind: str, value: object) -> float:
+    number = _coerce_non_negative_float_value(kind, value)
+    if number == 0.0:
+        raise ModuleError(f"{kind} must be positive")
+    return number
+
+
+def _coerce_unit_interval_exclusive_zero(kind: str, value: object) -> float:
+    number = _coerce_finite_float_value(kind, value)
+    if not 0.0 < number <= 1.0:
+        raise ModuleError(f"{kind} must be in range (0, 1]")
+    return number
+
+
 def _coerce_percentage_value(kind: str, value: object) -> float:
     number = _coerce_finite_float_value(kind, value)
     if not 0.0 <= number <= 100.0:

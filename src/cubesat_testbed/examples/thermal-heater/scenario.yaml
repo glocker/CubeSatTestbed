@@ -1,0 +1,45 @@
+name: "Thermal Heater Control Loop Test"
+description: "Verify that the OBC closes a heater loop over the bus, and that a stuck heater defeats it"
+
+steps:
+  # The node starts warm and loses more heat than it generates, so it falls
+  # toward its passive equilibrium until the OBC intervenes.
+  - action: "wait"
+    virtual_time: "4s"
+
+  - action: "assert"
+    name: "node_cools_toward_ambient"
+    signal: "thermal.telemetry.temperature_c"
+    op: "<"
+    value: 0.0
+
+  # The heater state is read back off the bus, not out of the model: this is
+  # the OBC's command having crossed the CSP bus and reached the module.
+  - action: "assert"
+    name: "obc_commanded_the_heater_on"
+    signal: "thermal.telemetry.heater_status"
+    op: "=="
+    value: "on"
+    timeout: "2s"
+
+  - action: "assert"
+    name: "heater_loop_recovers_the_node"
+    signal: "thermal.telemetry.temperature_c"
+    op: ">"
+    value: 5.0
+    timeout: "20s"
+
+  # A named fault the module itself defines: the OBC keeps commanding the
+  # heater on and the rule keeps firing, but the hardware no longer responds.
+  - action: "inject_fault"
+    type: "named_fault"
+    target: "thermal.heater_stuck_off"
+
+  - action: "wait"
+    virtual_time: "10s"
+
+  - action: "assert"
+    name: "stuck_heater_defeats_the_loop"
+    signal: "thermal.telemetry.temperature_c"
+    op: "<"
+    value: -5.0
