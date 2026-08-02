@@ -106,6 +106,10 @@ EXAMPLES: tuple[Example, ...] = (
         name="module-params",
         summary="retuning a built-in module through [nodes.<node>.params]",
     ),
+    Example(
+        name="thermal-heater",
+        summary="an OBC heater loop closing over the bus; companion to docs/writing-a-module.md",
+    ),
 )
 
 _EXAMPLES_BY_NAME = {example.name: example for example in EXAMPLES}

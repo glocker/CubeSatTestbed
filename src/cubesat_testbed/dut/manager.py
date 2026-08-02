@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from cubesat_testbed.config import ModuleType, NodeMode, TestbedConfig
+from cubesat_testbed.config import NodeMode, TestbedConfig
 
 
 class ParticipantKind(str, Enum):
@@ -36,8 +36,12 @@ class NodeParticipant:
     name: str
     kind: ParticipantKind
     address: int
-    module_type: ModuleType | None
-    """Set only when ``kind is ParticipantKind.SIMULATED``."""
+    module_type: str | None
+    """Registered module-type name, set only when ``kind is SIMULATED``.
+
+    A plain string, like ``NodeConfig.module_type`` it mirrors, because the
+    module registry rather than a closed enum decides which types exist.
+    """
 
     @property
     def is_simulated(self) -> bool:

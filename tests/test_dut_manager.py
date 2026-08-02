@@ -57,8 +57,9 @@ def test_resolve_participants_carries_address_and_module_type() -> None:
     participant = resolve_participants(setup)["eps"]
 
     assert participant.address == 5
-    assert participant.module_type is not None
-    assert participant.module_type.value == "generic_eps"
+    # A plain registered name, not an enum member: the module registry decides
+    # which module types exist, so a third-party one arrives here unchanged.
+    assert participant.module_type == "generic_eps"
 
 
 def test_resolve_participants_leaves_module_type_unset_for_external_nodes() -> None:

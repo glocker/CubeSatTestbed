@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import io
 import json
 import sys
@@ -73,6 +74,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "run a packaged example in place instead of --config/--scenario, so a fresh "
             f"install has something to run; one of: {_example_name_list()}"
+        ),
+    )
+    run_parser.add_argument(
+        "--module-import",
+        action="append",
+        metavar="MODULE",
+        dest="module_imports",
+        default=None,
+        help=(
+            "import a Python module before parsing the config, so the module types it "
+            "registers can be used as module_type values; repeatable. The working "
+            "directory is importable, so a plain my_modules.py next to the setup file works"
         ),
     )
     run_parser.add_argument(
@@ -170,6 +183,9 @@ def _run_command(args: argparse.Namespace) -> int:
 
     started = time.perf_counter()
     try:
+        # Before the config is read: a module type only exists once the package
+        # defining it has been imported, and module_type is validated at parse time.
+        _import_module_packages(args.module_imports)
         config_path, scenario_path = _resolve_run_inputs(args)
         # The setup is loaded here as well as inside run_scenario_files, because the
         # transport/--realtime mismatch is a CLI-level warning and has to be raised
@@ -216,6 +232,36 @@ def _run_command(args: argparse.Namespace) -> int:
     elif not args.quiet:
         _print_summary(result)
     return exit_code
+
+
+def _import_module_packages(module_names: Sequence[str] | None) -> None:
+    """Import each ``--module-import`` target so its module types register.
+
+    The working directory is prepended to ``sys.path`` first. A console script
+    puts its own ``bin`` directory there instead of the caller's, so without
+    this a ``my_modules.py`` sitting next to the setup file -- the layout
+    ``init`` produces and the natural one for a project's own subsystem model
+    -- would not be importable, and only installed packages would work.
+
+    An import failure is raised as a ``ValueError`` so the CLI reports it like
+    any other execution error (exit code 2, ``--json`` honoured) rather than
+    dumping a traceback.
+    """
+
+    if not module_names:
+        return
+
+    working_directory = str(Path.cwd())
+    if working_directory not in sys.path:
+        sys.path.insert(0, working_directory)
+
+    for module_name in module_names:
+        try:
+            importlib.import_module(module_name)
+        except ImportError as exc:
+            raise ValueError(
+                f"--module-import {module_name!r} could not be imported: {exc}"
+            ) from exc
 
 
 def _resolve_run_inputs(args: argparse.Namespace) -> tuple[Path, Path]:

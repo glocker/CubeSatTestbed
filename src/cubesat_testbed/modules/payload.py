@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from cubesat_testbed.engine import CommandPayload, DiscreteEventEngine, VirtualTime
 from cubesat_testbed.fault_injection import FaultInjectionEngine
@@ -26,6 +26,9 @@ from cubesat_testbed.modules.base import (
     normalize_command,
 )
 from cubesat_testbed.transport.base import EndpointId
+
+if TYPE_CHECKING:
+    from cubesat_testbed.modules.registry import ModuleBuildContext
 
 PowerStatus = Literal["online", "offline"]
 
@@ -293,6 +296,15 @@ class SimplePayloadModule(SimulatedModule):
         return before - after
 
 
+def build_simple_payload(context: ModuleBuildContext) -> SimplePayloadModule:
+    """Registry factory for the ``simple_payload`` module type."""
+
+    return SimplePayloadModule(
+        context.module_config(SimplePayloadConfig),
+        fault_engine=context.fault_engine,
+    )
+
+
 def _extract_byte_count(
     payload: object,
     *,
@@ -327,4 +339,5 @@ __all__ = [
     "SimplePayloadConfig",
     "SimplePayloadModule",
     "SimplePayloadState",
+    "build_simple_payload",
 ]

@@ -1,0 +1,91 @@
+# Example setup for a thermal control loop that closes over the bus.
+#
+# The thermal node knows nothing about the OBC and the OBC knows nothing about
+# the thermal model's internals. They are connected only by configuration:
+# the thermal node publishes `temperature_c` as real CSP frames, the OBC's
+# rules read that decoded signal and answer with configured named commands,
+# and those commands come back over the same bus into the module. Nothing here
+# is wired module-to-module in Python -- which is what makes this the shape a
+# module you write yourself plugs into. See `docs/writing-a-module.md`.
+
+[transport]
+type = "in-memory"
+
+[nodes.obc]
+mode = "simulated"
+module_type = "obc_peer"
+address = 1
+
+[nodes.thermal]
+mode = "simulated"
+module_type = "thermal_rc"
+address = 4
+
+# A deliberately small, fast node: tau = capacity / conductance = 5 virtual
+# seconds, so a scenario watches it cool and recover in seconds rather than in
+# the tens of minutes a real panel would take.
+[nodes.thermal.params]
+initial_temperature_c = 20.0
+ambient_temperature_c = -30.0
+thermal_capacity_j_per_k = 10.0
+conductance_w_per_k = 2.0
+internal_heat_w = 20.0
+heater_power_w = 60.0
+
+[nodes.obc.commands.thermal_heater_on]
+target = "thermal"
+destination_port = 11
+source_port = 11
+payload_hex = "01"
+
+[nodes.obc.commands.thermal_heater_off]
+target = "thermal"
+destination_port = 12
+source_port = 12
+payload_hex = "00"
+
+[nodes.thermal.telemetry.temperature_c]
+source_port = 22
+destination_port = 22
+units = "degC"
+min = -80
+max = 80
+offset = 0
+length = 4
+type = "float"
+
+# The wire codec is scalar-only, so a non-numeric signal declares how its
+# labels map to raw values. The module reports "on"/"off"; the bus carries a
+# single byte.
+[nodes.thermal.telemetry.heater_status]
+source_port = 23
+destination_port = 23
+offset = 0
+length = 1
+type = "uint"
+
+[nodes.thermal.telemetry.heater_status.enum]
+0 = "off"
+1 = "on"
+
+# Thermostat with hysteresis: the two thresholds are far enough apart that the
+# heater does not chatter every tick. Both rules are stateless, exactly as OBC
+# Peer v1 requires -- the hysteresis lives in the threshold pair, not in
+# remembered state.
+[nodes.obc.rules.heater_on_when_cold]
+signal = "thermal.telemetry.temperature_c"
+op = "<"
+threshold = 0.0
+
+[[nodes.obc.rules.heater_on_when_cold.actions]]
+type = "send_command"
+command = "thermal_heater_on"
+
+[nodes.obc.rules.heater_off_when_warm]
+signal = "thermal.telemetry.temperature_c"
+op = ">"
+threshold = 8.0
+
+[[nodes.obc.rules.heater_off_when_warm.actions]]
+type = "send_command"
+command = "thermal_heater_off"
