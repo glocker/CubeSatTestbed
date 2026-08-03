@@ -19,7 +19,17 @@ if ! ip link show "${CAN_INTERFACE}" >/dev/null 2>&1; then
     if command -v modprobe >/dev/null 2>&1; then
         modprobe vcan 2>/dev/null || true
     fi
-    ip link add dev "${CAN_INTERFACE}" type vcan
+    if ! ip link add dev "${CAN_INTERFACE}" type vcan; then
+        # Kernel modules are global, so this has to be fixed outside the
+        # container: /lib/modules is not mounted here and modprobe above had
+        # nothing to read. Say so explicitly -- the bare RTNETLINK error this
+        # replaces killed the entrypoint under `set -e`, leaving whoever ran it
+        # with a container that had silently exited.
+        echo "error: cannot create ${CAN_INTERFACE}: the host kernel has no vcan module loaded." >&2
+        echo "Load it on the host, not in this container:" >&2
+        echo "    sudo modprobe vcan" >&2
+        exit 1
+    fi
 fi
 
 ip link set dev "${CAN_INTERFACE}" up

@@ -11,6 +11,19 @@ baseline.
 
 The container workflow uses `vcan0` consistently.
 
+The one prerequisite the container cannot satisfy itself is the `vcan` kernel
+module. It creates `vcan0` inside its own network namespace, but modules are
+global and `/lib/modules` is not mounted into the container, so load it on the
+host first:
+
+```sh
+sudo modprobe vcan
+```
+
+A machine that has generated vectors before usually has it loaded already;
+a fresh one (a CI runner, a new laptop) does not, and the container will exit
+during startup with an explicit error saying so.
+
 1. Build and start the vector environment:
 
    ```sh
