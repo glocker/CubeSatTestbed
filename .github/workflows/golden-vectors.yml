@@ -13,11 +13,17 @@ on:
       - "tests/golden_vectors/**"
       - "Dockerfile"
       - "docker-compose.yml"
+      # Its own definition, so a change to this job is verified by running it
+      # rather than by waiting for the nightly schedule to report the result.
+      - ".github/workflows/golden-vectors.yml"
   pull_request:
     paths:
       - "tests/golden_vectors/**"
       - "Dockerfile"
       - "docker-compose.yml"
+      # Its own definition, so a change to this job is verified by running it
+      # rather than by waiting for the nightly schedule to report the result.
+      - ".github/workflows/golden-vectors.yml"
   workflow_dispatch: {}
 
 jobs:
