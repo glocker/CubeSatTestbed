@@ -28,14 +28,44 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The container creates vcan0 inside its own network namespace, but kernel
+      # modules are global: with vcan absent from the host kernel, the
+      # entrypoint's `ip link add type vcan` fails, `set -eu` takes the
+      # entrypoint down with it, and the container is already gone when a later
+      # step tries to exec into it. Loading it from inside is not an option --
+      # /lib/modules is not mounted there, so modprobe has nothing to read.
+      # A developer machine that has generated vectors before already has vcan
+      # loaded, which is why this only ever failed on a fresh CI runner.
+      - name: Load the vcan kernel module on the runner
+        run: |
+          sudo modprobe vcan
+          lsmod | grep '^vcan'
+
       - name: Build the libcsp golden-vector image
         run: docker compose build
 
       - name: Start the golden-vector container
         run: docker compose up -d
 
+      # `up -d` exits 0 for a container that starts and immediately dies, so the
+      # first sign of trouble used to be "service is not running" from the step
+      # below, with the entrypoint's own error nowhere in the log. Check here
+      # instead, and print that output either way.
+      - name: Verify the container stayed up
+        run: |
+          if [ -z "$(docker compose ps --status running --quiet libcsp-vectors)" ]; then
+            echo "::error::The golden-vector container exited during startup; its entrypoint output follows."
+            docker compose logs --no-color libcsp-vectors
+            exit 1
+          fi
+          docker compose logs --no-color libcsp-vectors
+
       - name: Regenerate every committed vector from a fresh libcsp build
         run: docker compose exec -T libcsp-vectors /app/tests/golden_vectors/scripts/regenerate-vectors.sh
+
+      - name: Container logs
+        if: failure()
+        run: docker compose logs --no-color libcsp-vectors
 
       - name: Stop the golden-vector container
         if: always()
