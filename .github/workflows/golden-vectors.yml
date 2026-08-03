@@ -36,8 +36,24 @@ jobs:
       # /lib/modules is not mounted there, so modprobe has nothing to read.
       # A developer machine that has generated vectors before already has vcan
       # loaded, which is why this only ever failed on a fresh CI runner.
+      # The runner's azure-flavour kernel image ships without the CAN modules --
+      # `modprobe vcan` there reports "Module vcan not found in directory
+      # /lib/modules/<version>". They live in the matching linux-modules-extra
+      # package, which has to be installed for that exact kernel ABI, so this
+      # cannot be pinned to a version and must follow `uname -r`.
       - name: Load the vcan kernel module on the runner
         run: |
+          if sudo modprobe vcan 2>/dev/null; then
+            lsmod | grep '^vcan'
+            exit 0
+          fi
+          package="linux-modules-extra-$(uname -r)"
+          echo "vcan is absent from this runner's kernel image; installing $package"
+          sudo apt-get update
+          if ! sudo apt-get install -y "$package"; then
+            echo "::error::$package is unavailable for kernel $(uname -r); the Ubuntu archive may not have published it for this runner image yet."
+            exit 1
+          fi
           sudo modprobe vcan
           lsmod | grep '^vcan'
 
