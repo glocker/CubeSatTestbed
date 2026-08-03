@@ -54,6 +54,14 @@ breakdown.
 
 ## Quickstart
 
+![Demo of a full run](https://raw.githubusercontent.com/glocker/CubeSatTestbed/main/docs/images/demo.gif)
+
+One run end to end: install, a PASS with its exit code, the wire trace proving
+assertions read frames off the bus, a thermal module closing a heater loop, and
+a deliberate failure exiting 1. Recorded from `main` — the published 1.0.0
+predates `init`, `--example` and `--trace`. The cast is scripted and
+re-recordable: see [`docs/demo/`](docs/demo/).
+
 ```sh
 pip install cubesat-testbed
 cubesat-testbed run --example default
