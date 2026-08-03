@@ -9,6 +9,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- A recorded demo in the README: one run showing the install, a PASS with its
+  exit code, the `--trace` wire output including the OBC's own command frame, a
+  thermal module closing a heater loop, and a deliberate failure exiting 1. The
+  session is scripted rather than hand-recorded, so it can be reproduced when
+  the CLI's output changes — see [`docs/demo/`](docs/demo/).
 - A documented, tested path to writing your own subsystem module:
   [`docs/writing-a-module.md`](docs/writing-a-module.md). It covers the
   module/FSM contract, the config dataclass that doubles as the
