@@ -5,21 +5,66 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0] - 2026-08-03
+
+Two things changed shape in this release. The CLI became a tool you can
+actually use on its own: install it, run a packaged example, drive real
+hardware over SocketCAN, and read the decoded frames it exchanged. And modules
+became a real extension point rather than a documented intention -- the module
+types that ship here are registered through the same public call your own
+module uses.
 
 ### Added
 
-- A recorded demo in the README: one run showing the install, a PASS with its
-  exit code, the `--trace` wire output including the OBC's own command frame, a
-  thermal module closing a heater loop, and a deliberate failure exiting 1. The
-  session is scripted rather than hand-recorded, so it can be reproduced when
-  the CLI's output changes — see [`docs/demo/`](docs/demo/).
+- Runnable examples inside the package. `pip install cubesat-testbed` used to
+  install a CLI with nothing to feed it, because every setup and scenario
+  lived in the repository. They now ship in the wheel as
+  `cubesat_testbed.examples`: `default`, `socketcan-hil`, `module-params` and
+  `thermal-heater`. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#packaged-examples).
+- `cubesat-testbed run --example NAME`: runs a packaged example in place,
+  without naming any paths, so a fresh install is one command away from a
+  PASS. It replaces `--config`/`--scenario`, which are no longer required
+  flags; combining the two is rejected.
+- `cubesat-testbed init [DIR]`: copies an example -- setup, scenario and a
+  README explaining them -- into `DIR` to edit, and prints the exact command
+  to run it, including any flags that example needs. `--example NAME` selects
+  one, `--list` shows the catalogue, and existing files are never overwritten
+  without `--force`. The check happens before any file is written, so a
+  refused `init` leaves the directory untouched.
+- `cubesat-testbed run --realtime`: runs the scenario on a `RealTimeClock`
+  instead of the default `VirtualClock`, pacing virtual time against
+  wall-clock time so a real `software`/`hardware` peer gets a window to
+  answer. Hardware-in-the-loop runs no longer require Python glue -- a
+  `socketcan` setup config plus this flag is the whole path. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#hardware-in-the-loop-from-the-cli).
+- A `stderr` warning when the setup config declares a `socketcan` transport
+  but `--realtime` was not passed: the run would otherwise jump straight
+  through virtual time and never hear a real peer. It stays a warning, not an
+  error, because a SocketCAN setup whose nodes are all `simulated` runs
+  correctly unpaced.
+- `cubesat-testbed run --trace`: writes one decoded line per CAN frame to
+  `stderr` -- virtual timestamp, direction, CSP v2 header fields, the raw CAN
+  data and CSP payload bytes, and the configured command route or decoded
+  telemetry signal the frame carries. A failing scenario can now be diagnosed
+  from CLI output alone. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#wire-level-frame-trace).
+- `TracingTransportAdapter`, a transport wrapper that traces every frame in
+  both directions. It sits at the transport boundary, so it also sees frames an
+  OBC Peer module sends straight to the bus, and outgoing frames on SocketCAN,
+  which the adapter never receives back. `build_runtime`/`run_scenario`/
+  `run_scenario_files` take a `trace` stream to enable it from the Python API.
 - A documented, tested path to writing your own subsystem module:
   [`docs/writing-a-module.md`](docs/writing-a-module.md). It covers the
   module/FSM contract, the config dataclass that doubles as the
   `[nodes.<node>.params]` schema, the model/telemetry split that makes fault
   injection work, telemetry wire layouts, registration, and closing a control
   loop over the bus.
+- `cubesat-testbed run --module-import MODULE`: imports a Python module before
+  the setup config is parsed, so the module types it registers can be named as
+  `module_type` values. Repeatable, and the working directory is importable, so
+  a plain `my_modules.py` next to `setup.toml` works without packaging
+  anything.
 - `thermal_rc`, a lumped-capacitance (RC) thermal module with a commandable
   heater, three named faults (`heater_stuck_off`, `heater_stuck_on`,
   `radiator_degraded`) and a config that refuses an integration step long
@@ -28,11 +73,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - The `thermal-heater` packaged example: an OBC heater loop that closes
   entirely over the CSP bus -- telemetry out, rule, command back in -- with no
   Python wiring between the two modules.
-- `cubesat-testbed run --module-import MODULE`: imports a Python module before
-  the setup config is parsed, so the module types it registers can be named as
-  `module_type` values. Repeatable, and the working directory is importable, so
-  a plain `my_modules.py` next to `setup.toml` works without packaging
-  anything.
+- A recorded demo in the README: one run showing the install, a PASS with its
+  exit code, the `--trace` wire output including the OBC's own command frame, a
+  thermal module closing a heater loop, and a deliberate failure exiting 1. The
+  session is scripted rather than hand-recorded, so it can be reproduced when
+  the CLI's output changes -- see [`docs/demo/`](docs/demo/).
+- `tests/test_hil_demo.py` now drives the `socketcan-hil` example
+  end to end through the CLI itself, with an external peer answering on
+  `vcan0` in real time, and pins the unpaced run's miss-plus-warning
+  behaviour alongside it.
 
 ### Changed
 
@@ -52,62 +101,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - `ObcRule`-to-`ObcPeerRule` conversion moved from `scenario/runner.py` to
   `modules/obc_peer.py` as `obc_peer_rules_from_config`, next to the runtime
   type it produces.
-- `build_runtime` attaches the runtime's `FaultInjectionEngine` to a module
-  whose factory did not pass one. Without it, every state override, signal
-  override and named fault against that node silently did nothing, so a
-  scenario would pass or fail for the wrong reason.
 - A module now only needs `telemetry()` for the runner to encode its values
   onto the bus; `emit_telemetry()` is no longer also required. It is never
   called by the runner, and requiring it silently excluded otherwise correct
   modules from publishing anything.
-
-### Added
-
-- Runnable examples inside the package. `pip install cubesat-testbed` used to
-  install a CLI with nothing to feed it, because every setup and scenario
-  lived in the repository. They now ship in the wheel as
-  `cubesat_testbed.examples`, three of them: `default`, `socketcan-hil` and
-  `module-params`. See
-  [`docs/v1-scope.md`](docs/v1-scope.md#packaged-examples).
-- `cubesat-testbed run --example NAME`: runs a packaged example in place,
-  without naming any paths, so a fresh install is one command away from a
-  PASS. It replaces `--config`/`--scenario`, which are no longer required
-  flags; combining the two is rejected.
-- `cubesat-testbed init [DIR]`: copies an example -- setup, scenario and a
-  README explaining them -- into `DIR` to edit, and prints the exact command
-  to run it, including any flags that example needs. `--example NAME` selects
-  one, `--list` shows the catalogue, and existing files are never overwritten
-  without `--force`. The check happens before any file is written, so a
-  refused `init` leaves the directory untouched.
-- `cubesat-testbed run --trace`: writes one decoded line per CAN frame to
-  `stderr` -- virtual timestamp, direction, CSP v2 header fields, the raw CAN
-  data and CSP payload bytes, and the configured command route or decoded
-  telemetry signal the frame carries. A failing scenario can now be diagnosed
-  from CLI output alone. See
-  [`docs/v1-scope.md`](docs/v1-scope.md#wire-level-frame-trace).
-- `TracingTransportAdapter`, a transport wrapper that traces every frame in
-  both directions. It sits at the transport boundary, so it also sees frames an
-  OBC Peer module sends straight to the bus, and outgoing frames on SocketCAN,
-  which the adapter never receives back. `build_runtime`/`run_scenario`/
-  `run_scenario_files` take a `trace` stream to enable it from the Python API.
-- `cubesat-testbed run --realtime`: runs the scenario on a `RealTimeClock`
-  instead of the default `VirtualClock`, pacing virtual time against
-  wall-clock time so a real `software`/`hardware` peer gets a window to
-  answer. Hardware-in-the-loop runs no longer require Python glue -- a
-  `socketcan` setup config plus this flag is the whole path. See
-  [`docs/v1-scope.md`](docs/v1-scope.md#hardware-in-the-loop-from-the-cli).
-- A `stderr` warning when the setup config declares a `socketcan` transport
-  but `--realtime` was not passed: the run would otherwise jump straight
-  through virtual time and never hear a real peer. It stays a warning, not an
-  error, because a SocketCAN setup whose nodes are all `simulated` runs
-  correctly unpaced.
-- `tests/test_hil_demo.py` now drives the `socketcan-hil` example
-  end to end through the CLI itself, with an external peer answering on
-  `vcan0` in real time, and pins the unpaced run's miss-plus-warning
-  behaviour alongside it.
-
-### Changed
-
 - The README quickstart leads with `pip install cubesat-testbed` and
   `cubesat-testbed run --example default`; the clone-and-`uv sync` flow is now
   the contributor route, documented in `CONTRIBUTING.md`.
@@ -117,20 +114,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   The test suite addresses the examples through the package instead of through
   `configs/` path literals, and so no longer depends on the directory pytest
   is invoked from.
-- The README now states the shipped status -- 1.0.0, released and on PyPI --
-  instead of `pre-v1, under active development`. The changelog's versioning
-  note no longer promises SemVer "once the first tag is cut"; the tag exists.
+- The README status line, the changelog's versioning note and the
+  `Development Status` trove classifier no longer disagree about what has
+  shipped; `pre-v1, under active development` is gone, and the classifier
+  reaches PyPI with this release.
 - CI, PyPI, supported-Python and license badges on the README.
-- `Development Status` trove classifier raised from `4 - Beta` to
-  `5 - Production/Stable`, matching the released 1.0.0. Reaches PyPI with the
-  next release.
 
 ### Fixed
 
+- `build_runtime` attaches the runtime's `FaultInjectionEngine` to a module
+  whose factory did not pass one. Without it, every state override, signal
+  override and named fault against that node silently did nothing, so a
+  scenario would pass or fail for the wrong reason.
 - `run_scenario`/`run_scenario_files` now close the transport they built when
   the scenario ends -- pass, fail or raise -- so a HIL run hands its CAN
   socket back instead of leaking it. `TransportAdapter.close()` is part of the
   transport interface, defaulting to a no-op for in-process adapters.
+- The nightly golden-vector job now runs. It had never been green: the runner's
+  kernel image carries no CAN modules, so the container could not create
+  `vcan0` and exited during startup, which surfaced one step later as
+  `service "libcsp-vectors" is not running`. The workflow installs the matching
+  `linux-modules-extra`, checks the container survived startup, prints its
+  entrypoint output, and runs when its own definition changes. Freshly built
+  libcsp `v2.1` (`48f7fb0`) is once again verified byte-for-byte against the
+  committed fixtures on a schedule.
 
 ## [1.0.0] - 2026-07-31
 

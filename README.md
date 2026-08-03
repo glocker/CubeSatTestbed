@@ -9,7 +9,7 @@ A modular CubeSat subsystem emulation and hardware-in-the-loop test framework.
 
 ![Project scheme](https://raw.githubusercontent.com/glocker/CubeSatTestbed/main/docs/images/scheme.png)
 
-**Status:** v1.0.0 released and published to PyPI. See
+**Status:** v1.1.0 released and published to PyPI. See
 [`CHANGELOG.md`](CHANGELOG.md) for what shipped and
 [`docs/roadmap.md`](docs/roadmap.md) for what's next.
 
@@ -58,9 +58,9 @@ breakdown.
 
 One run end to end: install, a PASS with its exit code, the wire trace proving
 assertions read frames off the bus, a thermal module closing a heater loop, and
-a deliberate failure exiting 1. Recorded from `main` — the published 1.0.0
-predates `init`, `--example` and `--trace`. The cast is scripted and
-re-recordable: see [`docs/demo/`](docs/demo/).
+a deliberate failure exiting 1. It was recorded just before the 1.1.0 release,
+so it installs from git rather than from PyPI; everything it shows is in 1.1.0.
+The cast is scripted and re-recordable: see [`docs/demo/`](docs/demo/).
 
 ```sh
 pip install cubesat-testbed

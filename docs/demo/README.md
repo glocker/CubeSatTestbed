@@ -34,10 +34,16 @@ Two things are the point of the demo and should survive any edit:
   script breaks the injected battery level so the FDIR rule never trips, and
   the assertion fails with the observed value — which is exactly what CI sees.
 
-## Installing from git
+## What it installs
 
-`demo.sh` installs from `git+https://github.com/glocker/CubeSatTestbed@main`
-rather than from PyPI, because the published 1.0.0 predates `init`,
-`--example` and `--trace`; a demo of those commands cannot be recorded against
-it. Once a release carrying them is on PyPI, set `INSTALL_SPEC` at the top of
-`demo.sh` back to plain `cubesat-testbed` and re-record.
+`demo.sh` installs the published `cubesat-testbed` package, which is what a
+viewer of the recording would type. To demonstrate something that has landed on
+`main` but is not released yet, override `INSTALL_SPEC`:
+
+```sh
+INSTALL_SPEC=git+https://github.com/glocker/CubeSatTestbed@main docs/demo/record.sh
+```
+
+The GIF currently committed was recorded that way, just before the 1.1.0
+release, and shows the git URL. Re-recording it against PyPI is worth doing the
+next time the output changes.

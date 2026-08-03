@@ -1,6 +1,6 @@
 [project]
 name = "cubesat_testbed"
-version = "1.0.0"
+version = "1.1.0"
 description = "Deterministic CubeSat subsystem emulation and hardware-in-the-loop testbed"
 readme = "README.md"
 requires-python = ">=3.11"

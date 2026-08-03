@@ -9,10 +9,10 @@
 # non-zero exit code is the point of the demo.
 set -u
 
-# PyPI still serves 1.0.0, which predates `init`, `--example` and `--trace`.
-# Until 1.1.0 is published the demo has to install from git; after that,
-# change this to just `cubesat-testbed` and re-record.
-INSTALL_SPEC="${INSTALL_SPEC:-git+https://github.com/glocker/CubeSatTestbed@main}"
+# Every command below exists in 1.1.0, so the demo installs the published
+# package. Point this at git+https://github.com/glocker/CubeSatTestbed@main to
+# record something that has landed on main but is not released yet.
+INSTALL_SPEC="${INSTALL_SPEC:-cubesat-testbed}"
 
 TYPE_DELAY="${TYPE_DELAY:-0.03}"   # seconds per typed character
 PAUSE="${PAUSE:-1.2}"              # pause after a command's output

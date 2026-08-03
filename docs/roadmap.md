@@ -1,6 +1,6 @@
 # Roadmap
 
-**Current status:** v1.0.0 released 2026-07-31 and published to PyPI. See
+**Current status:** v1.1.0 released 2026-08-03 and published to PyPI. See
 [`CHANGELOG.md`](../CHANGELOG.md) for the release contents and
 [`docs/v1-scope.md`](v1-scope.md) for what v1 deliberately leaves out.
 
@@ -32,13 +32,13 @@
 - [x] Console PASS/FAIL scenario report.
 - [x] SocketCAN adapter for Linux/HIL.
 
-## Planned for v1.1
+## Shipped in v1.1.0
 
-v1.1 is aimed at one group of users: **flight-software engineers building
+v1.1 was aimed at one group of users: **flight-software engineers building
 smallsats.** They work from a terminal, Linux, CI and git, they evaluate a tool
 by reading its source and its wire-level output, and they already own real
 hardware and real buses. The items below are ordered by how directly they
-unblock that user, highest first.
+unblocked that user, highest first.
 
 1. [x] **HIL runs from the CLI.** `run --realtime` paces the run on a
        `RealTimeClock`, so a real peer gets wall-clock time to answer; a
@@ -60,24 +60,35 @@ unblock that user, highest first.
        runs one in place and `init [DIR]` copies one out to edit, so
        `pip install cubesat-testbed && cubesat-testbed run --example default`
        produces a PASS with no clone. The README quickstart leads with that path.
-5. [ ] **Documented path to writing a custom module.** The architecture puts
-       concrete subsystem behavior in modules, but there is no guide for
-       building one. Add `docs/writing-a-module.md` plus a worked example — the
-       thermal RC-style model listed as a stretch item in `docs/v1-scope.md` is
-       the natural candidate.
-6. [ ] **CSP v1 support.** A large share of flown and lab hardware still runs
-       CSP v1 and cannot use the testbed at all today. Golden vectors first,
-       codec after, exactly as for CSP v2; protocol version selectable from
-       setup config.
+5. [x] **Documented path to writing a custom module.**
+       [`docs/writing-a-module.md`](writing-a-module.md) walks through the
+       module contract, params, telemetry wire layouts and registration, with
+       the `thermal_rc` module and the `thermal-heater` example as the worked
+       case. The module registry became a real extension point in the same
+       change: the built-ins register through the same public
+       `register_module` call a third-party module uses, and
+       `run --module-import` loads one from the CLI.
 
 ### Release and presentation hygiene
 
-7. [ ] Cut a GitHub Release for `v1.0.0` (the tag is pushed; no release exists)
-       and make this a standing step for every future tag.
-8. [ ] Record an asciinema demo of a run, including a deliberate failure and the
-       resulting non-zero exit code. Worth recording only after item 2 lands.
-9. [x] CI, PyPI, license and supported-Python badges on the README, landed
+6. [x] Cut a GitHub Release for every pushed tag, using the matching
+       `CHANGELOG.md` entry as the body. `v1.0.0` was published retroactively;
+       it is a standing step in the release workflow now.
+7. [x] Record a demo of a run, including a deliberate failure and the resulting
+       non-zero exit code. Embedded in the README and reproducible from
+       [`docs/demo/`](demo/).
+8. [x] CI, PyPI, license and supported-Python badges on the README, landed
        alongside item 3.
+
+## Next
+
+1. [ ] **CSP v1 support.** A large share of flown and lab hardware still runs
+       CSP v1 and cannot use the testbed at all today. Golden vectors first,
+       codec after, exactly as for CSP v2; protocol version selectable from
+       setup config. This is the largest single expansion of addressable
+       users and the most expensive item on the list: it widens the protocol
+       surface the project has to keep correct permanently, which is why it
+       waited until the existing product was credible.
 
 ## Deferred
 
