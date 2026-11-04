@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- CFP2 fragmentation and reassembly for CSP v2 over CAN. A packet longer than
+  one CAN frame -- more than 4 payload bytes, or any payload with a CRC32/HMAC
+  trailer -- is now sent as several frames and rebuilt at the receiver, as
+  libcsp `v2.1` does, instead of being rejected. Layout, counters and the
+  `frame_count` wrap are fixed by eleven new multi-frame golden vectors
+  captured from libcsp on `vcan0`.
+- `max_packet_bytes` per node (default 256, libcsp's `CSP_BUFFER_SIZE`): the
+  largest payload a node can send or reassemble. A receiving node drops an
+  over-long packet.
+- Dropped packets are reported, never silent: `DROP` lines and a
+  `dropped_packets=N` summary field in text output, a `dropped_packets` list in
+  `--json`, and `DROP` lines in `--trace` (which also traces each fragment).
+  Reasons: `overflow`, `frame_lost`, `orphan_fragment`, `restarted`, `malformed`,
+  `timeout` (one virtual second).
+- `csp_client -n` (back-to-back packets) and payloads up to 200 bytes, for
+  generating multi-frame vectors.
+
+### Changed
+
+- A command `payload_hex` or telemetry layout longer than 4 bytes is accepted;
+  the former 4-byte limit is replaced by the sending node's `max_packet_bytes`.
+- `ObcPeerNamedCommand.encode()` returns the tuple of frames carrying the command
+  rather than one frame; `ObcPeerActionResult.command_envelope` is the last
+  frame and `command_envelopes` lists them all.
+
 ## [1.1.0] - 2026-08-03
 
 Two things changed shape in this release. The CLI became a tool you can

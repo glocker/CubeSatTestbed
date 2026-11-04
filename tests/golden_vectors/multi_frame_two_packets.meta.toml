@@ -1,0 +1,17 @@
+name = "multi_frame_two_packets"
+capture = "multi_frame_two_packets.txt"
+libcsp_repo = "https://github.com/libcsp/libcsp"
+libcsp_tag = "v2.1"
+libcsp_commit = "48f7fb0"
+command = "/app/tests/golden_vectors/bin/csp_client -c vcan0 -p -d 2 -l 12 -n 2"
+capture_command = "candump -n 4 vcan0 > /app/tests/golden_vectors/multi_frame_two_packets.txt"
+interface = "vcan0"
+meaning = "Multi-frame CSP v2 ping-port request (CFP2 fragmentation), Two back-to-back 12-byte packets from node 1: the CFP2 packet counter (CAN ID bits 5-6) is 0 for the first packet and 1 for the second."
+protocol = "CSP v2 over classic CAN 2.0B extended frames, CFP2 fragmented"
+source_address = 1
+destination_address = 2
+packet_count = 2
+expected_frame_count = 4
+expected_extended_can_ids = ["0x10004082", "0x10004085", "0x100040A2", "0x100040A5"]
+expected_frame_payloads_hex = ["00 04 14 80 55 56 57 58", "59 5A 5B 5C 5D 5E 5F 60", "00 04 14 C0 55 56 57 58", "59 5A 5B 5C 5D 5E 5F 60"]
+expected_reassembled_payloads_hex = ["55 56 57 58 59 5a 5b 5c 5d 5e 5f 60", "55 56 57 58 59 5a 5b 5c 5d 5e 5f 60"]

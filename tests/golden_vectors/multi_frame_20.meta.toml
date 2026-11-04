@@ -1,0 +1,17 @@
+name = "multi_frame_20"
+capture = "multi_frame_20.txt"
+libcsp_repo = "https://github.com/libcsp/libcsp"
+libcsp_tag = "v2.1"
+libcsp_commit = "48f7fb0"
+command = "/app/tests/golden_vectors/bin/csp_client -c vcan0 -p -d 2 -l 20"
+capture_command = "candump -n 3 vcan0 > /app/tests/golden_vectors/multi_frame_20.txt"
+interface = "vcan0"
+meaning = "Multi-frame CSP v2 ping-port request (CFP2 fragmentation), 20-byte payload: three frames, frame_count 0/1/2, end set only on the last."
+protocol = "CSP v2 over classic CAN 2.0B extended frames, CFP2 fragmented"
+source_address = 1
+destination_address = 2
+packet_count = 1
+expected_frame_count = 3
+expected_extended_can_ids = ["0x10004082", "0x10004084", "0x10004089"]
+expected_frame_payloads_hex = ["00 04 14 80 55 56 57 58", "59 5A 5B 5C 5D 5E 5F 60", "61 62 63 64 65 66 67 68"]
+expected_reassembled_payloads_hex = ["55 56 57 58 59 5a 5b 5c 5d 5e 5f 60 61 62 63 64 65 66 67 68"]

@@ -8,6 +8,7 @@ from cubesat_testbed.scenario.assertions import (
     format_assertion_result,
 )
 from cubesat_testbed.scenario.runner import (
+    DroppedPacket,
     ScenarioRunner,
     ScenarioRunnerError,
     ScenarioRunResult,
@@ -16,6 +17,8 @@ from cubesat_testbed.scenario.runner import (
     build_in_memory_runtime,
     build_obc_rules_from_file,
     build_runtime,
+    format_drop_trace_line,
+    format_dropped_packet,
     format_junit_error_xml,
     format_junit_xml,
     run_scenario,
@@ -24,6 +27,7 @@ from cubesat_testbed.scenario.runner import (
 
 __all__ = [
     "AssertionResult",
+    "DroppedPacket",
     "ScenarioAssertionError",
     "ScenarioRunResult",
     "ScenarioRunner",
@@ -36,6 +40,8 @@ __all__ = [
     "build_runtime",
     "compare_values",
     "format_assertion_result",
+    "format_drop_trace_line",
+    "format_dropped_packet",
     "format_junit_error_xml",
     "format_junit_xml",
     "run_scenario",

@@ -16,7 +16,17 @@
 #define DEFAULT_DESTINATION_ADDRESS 2U
 #define DEFAULT_PRIORITY CSP_PRIO_NORM
 #define DEFAULT_PAYLOAD_LENGTH 1U
-#define MAX_PAYLOAD_LENGTH 4U
+/*
+ * Largest payload the helper will send. libcsp's default packet buffer holds
+ * 256 bytes (CSP_BUFFER_SIZE); staying well below it leaves room for the CRC32
+ * / HMAC trailer libcsp appends and keeps every vector a packet libcsp itself
+ * would also accept on receive. Payloads over 4 bytes (or any payload carrying a
+ * CRC32/HMAC trailer) leave the single-frame profile and are sent by libcsp as
+ * several CFP2 frames.
+ */
+#define MAX_PAYLOAD_LENGTH 200U
+#define DEFAULT_PACKET_COUNT 1U
+#define MAX_PACKET_COUNT 8U
 #define PAYLOAD_BASE_BYTE 0x55U
 
 /** Runtime options parsed from the vector helper command line. */
@@ -27,6 +37,7 @@ struct options {
     uint8_t priority;
     uint32_t csp_opts;
     uint16_t payload_length;
+    uint16_t packet_count;
     bool send_ping;
 };
 
@@ -39,12 +50,13 @@ struct options {
 static void print_usage(FILE *stream, const char *program) {
     fprintf(stream,
             "Usage: %s -p [-c can-interface] [-a source-address] [-d destination-address]\n"
-            "          [-r priority] [-l payload-length] [-o flag[,flag...]]\n"
+            "          [-r priority] [-l payload-length] [-o flag[,flag...]] [-n packets]\n"
             "\n"
             "Generate libcsp CSP v2 SocketCAN traffic for repository golden vectors.\n"
             "\n"
             "Options:\n"
-            "  -p                      send one single-frame CSP ping-port request\n"
+            "  -p                      send CSP ping-port request(s); each becomes one CAN frame\n"
+            "                          when it fits, or several CFP2 frames when it does not\n"
             "  -c <can-interface>      SocketCAN interface (default: %s)\n"
             "  -a <source-address>     CSP source/interface address (default: %u)\n"
             "  -d <destination-address> CSP destination address (default: %u)\n"
@@ -54,6 +66,9 @@ static void print_usage(FILE *stream, const char *program) {
             "                          incrementing pattern starting at 0x%02x\n"
             "  -o <flag[,flag...]>     comma-separated CSP options: crc32, rdp, hmac\n"
             "                          (default: none)\n"
+            "  -n <packets>            send this many identical packets back to back, 1-%u\n"
+            "                          (default: %u); consecutive packets carry an\n"
+            "                          incrementing CFP2 packet counter\n"
             "  -h                      show this help\n",
             program,
             DEFAULT_CAN_INTERFACE,
@@ -62,7 +77,9 @@ static void print_usage(FILE *stream, const char *program) {
             (unsigned)DEFAULT_PRIORITY,
             MAX_PAYLOAD_LENGTH,
             DEFAULT_PAYLOAD_LENGTH,
-            PAYLOAD_BASE_BYTE);
+            PAYLOAD_BASE_BYTE,
+            MAX_PACKET_COUNT,
+            DEFAULT_PACKET_COUNT);
 }
 
 /**
@@ -141,7 +158,7 @@ static bool parse_csp_opts(const char *value, uint32_t *result) {
 static bool parse_args(int argc, char **argv, struct options *options) {
     int opt;
     uint16_t parsed_u16;
-    while ((opt = getopt(argc, argv, "c:a:d:r:l:o:ph")) != -1) {
+    while ((opt = getopt(argc, argv, "c:a:d:r:l:o:n:ph")) != -1) {
         switch (opt) {
             case 'c':
                 options->can_interface = optarg;
@@ -177,6 +194,13 @@ static bool parse_args(int argc, char **argv, struct options *options) {
                     return false;
                 }
                 break;
+            case 'n':
+                if (!parse_u16(optarg, MAX_PACKET_COUNT, &parsed_u16) || (parsed_u16 == 0U)) {
+                    fprintf(stderr, "Invalid packet count (1-%u): %s\n", MAX_PACKET_COUNT, optarg);
+                    return false;
+                }
+                options->packet_count = parsed_u16;
+                break;
             case 'p':
                 options->send_ping = true;
                 break;
@@ -197,57 +221,60 @@ static bool parse_args(int argc, char **argv, struct options *options) {
 }
 
 /**
- * Send the configured single-frame CSP request used by the committed golden
- * vectors.
+ * Send the configured CSP request(s) used by the committed golden vectors.
  *
- * The packet is emitted through the official libcsp SocketCAN path, not by
- * manually constructing a CAN frame, so the captured bytes remain a
- * libcsp-owned source of truth for the Python codec. csp_connect()/csp_send()
- * are used instead of csp_ping() so every vector stays a no-reply,
- * single-frame packet regardless of requested priority/options/payload
- * length.
+ * The packets are emitted through the official libcsp SocketCAN path, not by
+ * manually constructing CAN frames, so the captured bytes remain a libcsp-owned
+ * source of truth for the Python codec. csp_connect()/csp_send() are used
+ * instead of csp_ping() so every vector stays a no-reply packet regardless of
+ * requested priority/options/payload length. Whether a packet becomes one CAN
+ * frame or several CFP2 fragments is decided by libcsp from its length (payload
+ * plus any CRC32/HMAC trailer), never by this helper.
  *
  * @param can_iface libcsp CAN interface used for transmission and TX accounting.
  * @param options Parsed command-line options selecting destination, priority,
- * CSP connection options, and payload length/content.
- * @return EXIT_SUCCESS after libcsp reports one transmitted packet, otherwise
+ * CSP connection options, payload length/content and packet count.
+ * @return EXIT_SUCCESS after libcsp reports every packet transmitted, otherwise
  * EXIT_FAILURE.
  */
 static int send_vector_packet(csp_iface_t *can_iface, const struct options *options) {
     uint32_t tx_before = can_iface->tx;
     uint32_t tx_error_before = can_iface->tx_error;
 
-    csp_conn_t *connection = csp_connect(
-        options->priority,
-        options->destination_address,
-        CSP_PING,
-        0,
-        options->csp_opts);
-    if (connection == NULL) {
-        fprintf(stderr, "Failed to create CSP connection.\n");
-        return EXIT_FAILURE;
-    }
+    for (uint16_t sent = 0; sent < options->packet_count; sent++) {
+        csp_conn_t *connection = csp_connect(
+            options->priority,
+            options->destination_address,
+            CSP_PING,
+            0,
+            options->csp_opts);
+        if (connection == NULL) {
+            fprintf(stderr, "Failed to create CSP connection.\n");
+            return EXIT_FAILURE;
+        }
 
-    csp_packet_t *packet = csp_buffer_get(0);
-    if (packet == NULL) {
-        fprintf(stderr, "Failed to allocate CSP packet buffer.\n");
+        csp_packet_t *packet = csp_buffer_get(0);
+        if (packet == NULL) {
+            fprintf(stderr, "Failed to allocate CSP packet buffer.\n");
+            csp_close(connection);
+            return EXIT_FAILURE;
+        }
+
+        for (uint16_t i = 0; i < options->payload_length; i++) {
+            packet->data[i] = (uint8_t)(PAYLOAD_BASE_BYTE + i);
+        }
+        packet->length = options->payload_length;
+
+        csp_send(connection, packet);
         csp_close(connection);
-        return EXIT_FAILURE;
     }
-
-    for (uint16_t i = 0; i < options->payload_length; i++) {
-        packet->data[i] = (uint8_t)(PAYLOAD_BASE_BYTE + i);
-    }
-    packet->length = options->payload_length;
-
-    csp_send(connection, packet);
-    csp_close(connection);
 
     /*
      * libcsp send APIs return void here, so use interface counters to fail fast
-     * on silent TX errors.
+     * on silent TX errors. tx counts packets, not CAN frames.
      */
-    if ((can_iface->tx == tx_before) || (can_iface->tx_error != tx_error_before)) {
+    if (((can_iface->tx - tx_before) != options->packet_count) ||
+        (can_iface->tx_error != tx_error_before)) {
         fprintf(stderr, "Failed to transmit CSP request on SocketCAN.\n");
         return EXIT_FAILURE;
     }
@@ -270,6 +297,7 @@ int main(int argc, char **argv) {
         .priority = DEFAULT_PRIORITY,
         .csp_opts = CSP_O_NONE,
         .payload_length = DEFAULT_PAYLOAD_LENGTH,
+        .packet_count = DEFAULT_PACKET_COUNT,
         .send_ping = false,
     };
 

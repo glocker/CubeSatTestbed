@@ -80,9 +80,13 @@ def test_unpack_matches_committed_ping_golden_vector(
     assert decoded.can_fields.end
 
 
-def test_every_committed_golden_vector_decodes_and_repacks_byte_for_byte(
+def test_every_single_frame_golden_vector_decodes_and_repacks_byte_for_byte(
     golden_vector: GoldenVector,
 ) -> None:
+    """Multi-frame vectors are covered, frame sequence at a time, in test_csp_v2_cfp.py."""
+
+    if len(golden_vector.frames) != 1:
+        pytest.skip("multi-frame vector: see tests/test_csp_v2_cfp.py")
     first_frame = golden_vector.first_frame
     decoded = unpack(
         first_frame.can_id, first_frame.payload, is_extended_id=first_frame.is_extended_id

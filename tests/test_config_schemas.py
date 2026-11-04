@@ -518,29 +518,87 @@ def test_setup_rejects_named_fault_rule_action_with_duration() -> None:
         )
 
 
-def test_setup_rejects_oversize_single_frame_command_payload() -> None:
-    with pytest.raises(ValidationError, match="single-frame CSP payload"):
+_COMMAND_SETUP = """
+[transport]
+type = "in-memory"
+
+[nodes.obc]
+mode = "simulated"
+module_type = "obc_peer"
+address = 1
+{obc_extra}
+
+[nodes.payload]
+mode = "simulated"
+module_type = "simple_payload"
+address = 3
+{payload_extra}
+
+[nodes.obc.commands.big]
+target = "payload"
+destination_port = 10
+source_port = 10
+payload_hex = "{payload_hex}"
+"""
+
+
+def test_setup_accepts_a_command_payload_longer_than_one_can_frame() -> None:
+    config = parse_testbed_config(
+        _COMMAND_SETUP.format(obc_extra="", payload_extra="", payload_hex="00 01 02 03 04 05")
+    )
+
+    assert config.nodes["obc"].commands["big"].payload_hex == bytes(range(6))
+    assert config.nodes["obc"].max_packet_bytes == 256
+
+
+def test_setup_rejects_a_command_payload_over_the_senders_max_packet_bytes() -> None:
+    with pytest.raises(ValidationError, match=r"sending node 'obc' max_packet_bytes=4"):
+        parse_testbed_config(
+            _COMMAND_SETUP.format(
+                obc_extra="max_packet_bytes = 4", payload_extra="", payload_hex="00 01 02 03 04"
+            )
+        )
+
+
+def test_setup_allows_a_target_with_a_smaller_limit_than_the_command_payload() -> None:
+    config = parse_testbed_config(
+        _COMMAND_SETUP.format(
+            obc_extra="", payload_extra="max_packet_bytes = 4", payload_hex="00 01 02 03 04 05"
+        )
+    )
+
+    assert config.nodes["payload"].max_packet_bytes == 4
+
+
+def test_setup_rejects_a_telemetry_layout_over_the_nodes_max_packet_bytes() -> None:
+    with pytest.raises(ValidationError, match=r"needs a 12-byte payload.*max_packet_bytes=8"):
         parse_testbed_config(
             """
             [transport]
             type = "in-memory"
 
-            [nodes.obc]
+            [nodes.eps]
             mode = "simulated"
-            module_type = "obc_peer"
-            address = 1
+            module_type = "generic_eps"
+            address = 2
+            max_packet_bytes = 8
 
-            [nodes.payload]
-            mode = "simulated"
-            module_type = "simple_payload"
-            address = 3
-
-            [nodes.obc.commands.too_large]
-            target = "payload"
-            destination_port = 10
-            source_port = 10
-            payload_hex = "00 01 02 03 04"
+            [nodes.eps.telemetry.battery_percent]
+            source_port = 20
+            destination_port = 20
+            offset = 8
+            length = 4
+            type = "float"
             """
+        )
+
+
+def test_setup_rejects_a_non_positive_max_packet_bytes() -> None:
+    with pytest.raises(ValidationError):
+        parse_testbed_config(
+            _COMMAND_SETUP.format(
+                obc_extra="max_packet_bytes = 0", payload_extra="", payload_hex=""
+            )
         )
 
 

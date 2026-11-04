@@ -1,23 +1,32 @@
-"""libcsp-compatible CSP v2 codec for product v1.
+"""libcsp-compatible CSP v2 codec over classic CAN, including CFP2 fragmentation.
 
-v1 target profile:
+Target profile:
 
 - classic CAN 2.0;
 - extended 29-bit CAN identifiers;
-- single-frame packets only;
-- no fragmentation/reassembly;
+- one CSP packet per CAN frame (:func:`pack` / :func:`decode_frame`) or, when the
+  packet does not fit one frame, several CFP2 frames (:func:`fragment_packet` /
+  :class:`CspFragmenter` to send, :class:`CspReassembler` to receive);
 - golden-vector validation against captures produced by the project-owned C helper built from official libcsp v2.1 commit 48f7fb0.
 
 libcsp's CAN v2 framing stores the first 16 bits of the 48-bit CSP v2
 header in the extended CAN identifier. The remaining 32 header bits are the
-first four bytes of the CAN data field, followed by up to four bytes of CSP
-payload in this product-v1 single-frame profile.
+first four bytes of the CAN data field of the *first* frame, followed by up to
+four bytes of CSP payload. Every later frame carries up to eight payload bytes
+and no header. The CRC32/HMAC trailer libcsp appends counts as payload, so a
+packet with either flag needs a second frame even for a 4-byte payload.
+
+Reassembly follows ``csp_can2_rx`` in libcsp ``v2.1``: fragments are matched to
+their packet by priority, destination, sender and the 2-bit packet counter; the
+3-bit frame counter must arrive in order and wraps from 7 back to 0; a packet
+ends at the frame with the ``end`` bit (there is no length field); an incomplete
+packet is dropped after one second of silence.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import IntEnum
+from dataclasses import dataclass, field
+from enum import Enum, IntEnum
 
 CLASSIC_CAN_MAX_DATA_BYTES = 8
 STANDARD_CAN_ID_MAX = 0x7FF
@@ -27,6 +36,13 @@ CSP_V2_CAN_HEADER_EXTENSION_BYTES = 4
 CSP_V2_SINGLE_FRAME_MAX_PAYLOAD_BYTES = (
     CLASSIC_CAN_MAX_DATA_BYTES - CSP_V2_CAN_HEADER_EXTENSION_BYTES
 )
+
+CSP_V2_CFP_CONTINUATION_PAYLOAD_BYTES = CLASSIC_CAN_MAX_DATA_BYTES
+CSP_V2_DEFAULT_MAX_PACKET_BYTES = 256
+"""libcsp ``CSP_BUFFER_SIZE`` default: the most payload bytes (trailer included)
+one packet buffer holds, hence the most a node can send or reassemble."""
+CSP_V2_REASSEMBLY_TIMEOUT_US = 1_000_000
+"""libcsp ``PBUF_TIMEOUT_MS`` (1000 ms) in virtual microseconds."""
 
 CSP_V2_PRIORITY_MAX = 0x3
 CSP_V2_ADDRESS_MAX = 0x3FFF
@@ -224,12 +240,24 @@ class CspCanFrame:
 
 @dataclass(frozen=True, slots=True)
 class DecodedCspPacket:
-    """Decoded view of one supported CSP v2 single-frame CAN packet."""
+    """Decoded view of one CSP v2 packet, from one CAN frame or several."""
 
     fields: CspFields
     payload: bytes
     frame: CspCanFrame
     can_fields: CspCanIdFields
+    frames: tuple[CspCanFrame, ...] = ()
+    """Every CAN frame the packet arrived in, in order; ``frame`` is the first."""
+
+    def __post_init__(self) -> None:
+        if not self.frames:
+            object.__setattr__(self, "frames", (self.frame,))
+
+    @property
+    def frame_count(self) -> int:
+        """Number of CAN frames this packet was carried in."""
+
+        return len(self.frames)
 
 
 # Common libcsp spellings as importable constants.
@@ -293,9 +321,12 @@ def unpack(can_id: int, data: BytesLike, *, is_extended_id: bool = True) -> Deco
 def decode_frame(frame: CspCanFrame) -> DecodedCspPacket:
     """Decode one already materialized CAN frame.
 
-    Only product-v1 single-frame CSP v2 packets are accepted. Multi-frame CAN
-    fragments, standard CAN identifiers and malformed header-extension data are
-    rejected instead of being partially decoded.
+    Only a packet that fits one frame is decoded here. A frame that belongs to a
+    multi-frame packet (a first frame without ``end``, or a continuation frame)
+    is rejected rather than partially decoded: feed it to a
+    :class:`CspReassembler` instead, which turns the whole frame sequence into
+    one :class:`DecodedCspPacket`. Standard CAN identifiers and malformed
+    header-extension data are rejected as well.
     """
 
     if not frame.is_extended_id:
@@ -323,6 +354,419 @@ def decode_frame(frame: CspCanFrame) -> DecodedCspPacket:
         frame=frame,
         can_fields=can_fields,
     )
+
+
+def decode_can_id(can_id: int) -> CspCanIdFields:
+    """Split an extended CAN identifier into its CFP2 fields."""
+
+    return _unpack_can_id(_validate_uint("can_id", can_id, EXTENDED_CAN_ID_MAX))
+
+
+def decode_first_frame_header(frame: CspCanFrame) -> CspFields:
+    """Read the CSP header from a first frame, whether or not the packet continues.
+
+    The header is complete in the first frame alone (16 bits in the CAN ID, 32
+    in the data), so a bus monitor can name a multi-frame packet's route before
+    its payload has arrived.
+    """
+
+    if not frame.is_extended_id:
+        raise CspV2FrameError("CSP v2 over CAN requires an extended 29-bit CAN identifier")
+    can_fields = _unpack_can_id(frame.can_id)
+    if not can_fields.begin:
+        raise CspV2FrameError("only a first (begin) frame carries the CSP header")
+    if frame.dlc < CSP_V2_CAN_HEADER_EXTENSION_BYTES:
+        raise CspV2FrameError(
+            "CSP v2 CAN begin frame must contain the 4-byte header extension, "
+            f"got {frame.dlc} data bytes"
+        )
+    return _unpack_header_extension(
+        int.from_bytes(frame.data[:CSP_V2_CAN_HEADER_EXTENSION_BYTES], "big"),
+        priority=can_fields.priority,
+        destination=can_fields.destination,
+    )
+
+
+def fragment_packet(
+    fields: CspFields,
+    payload: BytesLike,
+    *,
+    sender: int | None = None,
+    packet_count: int = 0,
+) -> tuple[CspCanFrame, ...]:
+    """Split one CSP packet into the CAN frames libcsp would send for it.
+
+    The first frame carries the 4-byte header extension plus up to four payload
+    bytes; every later frame carries up to eight payload bytes, with
+    ``frame_count`` counting 1, 2, ... and wrapping at 8, and ``end`` set on the
+    last frame. A packet that fits the first frame is that frame alone
+    (identical to :func:`pack`). ``payload`` is the full CSP payload as libcsp
+    holds it, including any CRC32/HMAC trailer: this function does not compute
+    one.
+
+    ``packet_count`` is the 2-bit CFP2 packet counter that tells consecutive
+    packets from one sender apart; use :class:`CspFragmenter` to have it
+    advanced per sender.
+    """
+
+    _validate_csp_fields(fields)
+    payload_bytes = _coerce_bytes("payload", payload)
+    sender_value = fields.source & CSP_CAN_V2_SENDER_MAX if sender is None else sender
+    header_extension = _pack_header_extension(fields).to_bytes(
+        CSP_V2_CAN_HEADER_EXTENSION_BYTES, "big"
+    )
+
+    first_chunk = payload_bytes[:CSP_V2_SINGLE_FRAME_MAX_PAYLOAD_BYTES]
+    rest = payload_bytes[len(first_chunk) :]
+    chunks = [header_extension + first_chunk]
+    chunks.extend(
+        rest[offset : offset + CSP_V2_CFP_CONTINUATION_PAYLOAD_BYTES]
+        for offset in range(0, len(rest), CSP_V2_CFP_CONTINUATION_PAYLOAD_BYTES)
+    )
+
+    frames: list[CspCanFrame] = []
+    for index, chunk in enumerate(chunks):
+        can_fields = CspCanIdFields(
+            priority=fields.priority,
+            destination=fields.destination,
+            sender=sender_value,
+            packet_count=packet_count,
+            frame_count=index & CSP_CAN_V2_FRAME_COUNT_MAX if index else 0,
+            begin=index == 0,
+            end=index == len(chunks) - 1,
+        )
+        frames.append(CspCanFrame(can_id=_pack_can_id(can_fields), data=chunk, is_extended_id=True))
+    return tuple(frames)
+
+
+class CspFragmenter:
+    """Per-node packet sender state: the CFP2 packet counter and the size limit.
+
+    libcsp keeps one packet counter per CAN interface and advances it for every
+    packet it sends, so two back-to-back packets from one node differ in the
+    packet-counter bits of their CAN identifiers. This keeps that counter per
+    ``sender`` (the 6-bit CAN-ID sender field).
+
+    ``max_packet_bytes`` is the node's packet buffer size: a payload that does
+    not fit it could not even be built by that node's libcsp, so it is refused
+    here rather than put on the bus.
+    """
+
+    def __init__(self, *, max_packet_bytes: int = CSP_V2_DEFAULT_MAX_PACKET_BYTES) -> None:
+        self.max_packet_bytes = _validate_max_packet_bytes(max_packet_bytes)
+        self._packet_counts: dict[int, int] = {}
+
+    def fragment(
+        self,
+        fields: CspFields,
+        payload: BytesLike,
+        *,
+        sender: int | None = None,
+    ) -> tuple[CspCanFrame, ...]:
+        """Fragment ``payload`` and advance the sender's packet counter."""
+
+        payload_bytes = _coerce_bytes("payload", payload)
+        if len(payload_bytes) > self.max_packet_bytes:
+            raise CspV2FrameError(
+                f"CSP payload of {len(payload_bytes)} bytes exceeds the sender's "
+                f"max_packet_bytes={self.max_packet_bytes}"
+            )
+        sender_value = fields.source & CSP_CAN_V2_SENDER_MAX if sender is None else sender
+        count = self._packet_counts.get(sender_value, 0)
+        frames = fragment_packet(fields, payload_bytes, sender=sender_value, packet_count=count)
+        self._packet_counts[sender_value] = (count + 1) & CSP_CAN_V2_PACKET_COUNT_MAX
+        return frames
+
+
+class ReassemblyDropReason(str, Enum):
+    """Why a packet, or a frame, was discarded during reassembly."""
+
+    ORPHAN_FRAGMENT = "orphan_fragment"
+    """A continuation frame arrived with no packet in progress for it."""
+    FRAME_LOST = "frame_lost"
+    """``frame_count`` was not the next expected value: a frame went missing."""
+    OVERFLOW = "overflow"
+    """The packet grew past the receiving node's ``max_packet_bytes``."""
+    TIMEOUT = "timeout"
+    """No frame for the packet arrived within the reassembly timeout."""
+    RESTARTED = "restarted"
+    """A new first frame arrived for a packet still in progress."""
+    MALFORMED = "malformed"
+    """The frame or the reassembled header is not a valid CSP v2 packet."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReassemblyEvent:
+    """Outcome of feeding one frame, or of an expiry, to a :class:`CspReassembler`.
+
+    ``kind`` is ``"complete"`` (``packet`` is set), ``"pending"`` (frame stored,
+    packet not finished) or ``"dropped"`` (``reason`` and ``detail`` are set;
+    ``frame`` is ``None`` for a timeout, which no single frame causes).
+    ``time`` is the virtual time the event happened: for a timeout, the instant
+    the reassembly window closed rather than the instant it was noticed.
+    """
+
+    kind: str
+    time: int
+    frame: CspCanFrame | None = None
+    packet: DecodedCspPacket | None = None
+    reason: ReassemblyDropReason | None = None
+    detail: str = ""
+    sender: int | None = None
+    destination: int | None = None
+    limit: int | None = None
+
+
+@dataclass(slots=True)
+class _PartialPacket:
+    can_fields: CspCanIdFields
+    header_extension: int
+    frames: list[CspCanFrame]
+    payload: bytearray = field(default_factory=bytearray)
+    next_frame_count: int = 1
+    last_used: int = 0
+
+
+_ConnectionKey = tuple[int, int, int, int]
+
+
+class CspReassembler:
+    """Rebuild CSP packets from CFP2 CAN frames in virtual time.
+
+    One instance models what one receiving node's libcsp CAN interface does.
+    It is a pure state machine: every method takes the current virtual time
+    in microseconds, nothing reads a clock, so the same frames at the same
+    times always give the same events.
+
+    ``max_packet_bytes`` is that node's packet buffer size (libcsp
+    ``CSP_BUFFER_SIZE``): reassembled payload, trailer included, may not exceed
+    it, and ``None`` removes the limit (for a passive observer). Like libcsp,
+    stale partial packets are discarded when a packet from a new sender starts
+    (``feed``); call :meth:`expire` to flush them without waiting for that, for
+    example when a run ends.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_packet_bytes: int | None = CSP_V2_DEFAULT_MAX_PACKET_BYTES,
+        timeout_us: int = CSP_V2_REASSEMBLY_TIMEOUT_US,
+    ) -> None:
+        self.max_packet_bytes = (
+            None if max_packet_bytes is None else _validate_max_packet_bytes(max_packet_bytes)
+        )
+        self.timeout_us = _validate_uint("timeout_us", timeout_us, 2**62)
+        self._partials: dict[_ConnectionKey, _PartialPacket] = {}
+
+    @property
+    def pending_count(self) -> int:
+        """Number of packets currently partway through reassembly."""
+
+        return len(self._partials)
+
+    def feed(self, frame: CspCanFrame, *, now: int) -> tuple[ReassemblyEvent, ...]:
+        """Process one received frame; return what happened, in order."""
+
+        if not frame.is_extended_id:
+            return (
+                self._dropped(
+                    ReassemblyDropReason.MALFORMED,
+                    now,
+                    frame,
+                    "CSP v2 over CAN requires an extended 29-bit CAN identifier",
+                ),
+            )
+
+        can_fields = _unpack_can_id(frame.can_id)
+        key: _ConnectionKey = (
+            can_fields.priority,
+            can_fields.destination,
+            can_fields.sender,
+            can_fields.packet_count,
+        )
+        events: list[ReassemblyEvent] = []
+        partial = self._partials.get(key)
+
+        if partial is None:
+            if not can_fields.begin:
+                events.append(
+                    self._dropped(
+                        ReassemblyDropReason.ORPHAN_FRAGMENT,
+                        now,
+                        frame,
+                        f"continuation frame_count={can_fields.frame_count} with no packet "
+                        "in progress",
+                        can_fields,
+                    )
+                )
+                return tuple(events)
+            events.extend(self.expire(now))
+        else:
+            partial.last_used = now
+
+        if can_fields.begin:
+            if partial is not None:
+                events.append(
+                    self._dropped(
+                        ReassemblyDropReason.RESTARTED,
+                        now,
+                        frame,
+                        f"new first frame while {len(partial.frames)} frame(s) were collected",
+                        can_fields,
+                    )
+                )
+            if frame.dlc < CSP_V2_CAN_HEADER_EXTENSION_BYTES:
+                self._partials.pop(key, None)
+                events.append(
+                    self._dropped(
+                        ReassemblyDropReason.MALFORMED,
+                        now,
+                        frame,
+                        "first frame must carry the 4-byte header extension, "
+                        f"got {frame.dlc} data bytes",
+                        can_fields,
+                    )
+                )
+                return tuple(events)
+            partial = _PartialPacket(
+                can_fields=can_fields,
+                header_extension=int.from_bytes(
+                    frame.data[:CSP_V2_CAN_HEADER_EXTENSION_BYTES], "big"
+                ),
+                frames=[],
+                last_used=now,
+            )
+            self._partials[key] = partial
+            chunk = frame.data[CSP_V2_CAN_HEADER_EXTENSION_BYTES:]
+        else:
+            assert partial is not None
+            if can_fields.frame_count != partial.next_frame_count:
+                del self._partials[key]
+                events.append(
+                    self._dropped(
+                        ReassemblyDropReason.FRAME_LOST,
+                        now,
+                        frame,
+                        f"expected frame_count={partial.next_frame_count}, "
+                        f"got {can_fields.frame_count} after {len(partial.frames)} frame(s)",
+                        can_fields,
+                    )
+                )
+                return tuple(events)
+            partial.next_frame_count = (partial.next_frame_count + 1) & CSP_CAN_V2_FRAME_COUNT_MAX
+            chunk = frame.data
+
+        if (
+            self.max_packet_bytes is not None
+            and len(partial.payload) + len(chunk) > self.max_packet_bytes
+        ):
+            del self._partials[key]
+            events.append(
+                self._dropped(
+                    ReassemblyDropReason.OVERFLOW,
+                    now,
+                    frame,
+                    f"payload would reach {len(partial.payload) + len(chunk)} bytes, "
+                    f"over max_packet_bytes={self.max_packet_bytes}",
+                    can_fields,
+                    limit=self.max_packet_bytes,
+                )
+            )
+            return tuple(events)
+
+        partial.frames.append(frame)
+        partial.payload.extend(chunk)
+
+        if not can_fields.end:
+            events.append(
+                ReassemblyEvent(
+                    kind="pending",
+                    time=now,
+                    frame=frame,
+                    sender=can_fields.sender,
+                    destination=can_fields.destination,
+                )
+            )
+            return tuple(events)
+
+        del self._partials[key]
+        try:
+            fields = _unpack_header_extension(
+                partial.header_extension,
+                priority=partial.can_fields.priority,
+                destination=partial.can_fields.destination,
+            )
+            _validate_csp_fields(fields)
+        except CspV2CodecError as exc:
+            events.append(
+                self._dropped(ReassemblyDropReason.MALFORMED, now, frame, str(exc), can_fields)
+            )
+            return tuple(events)
+
+        packet = DecodedCspPacket(
+            fields=fields,
+            payload=bytes(partial.payload),
+            frame=partial.frames[0],
+            can_fields=partial.can_fields,
+            frames=tuple(partial.frames),
+        )
+        events.append(
+            ReassemblyEvent(
+                kind="complete",
+                time=now,
+                frame=frame,
+                packet=packet,
+                sender=can_fields.sender,
+                destination=can_fields.destination,
+            )
+        )
+        return tuple(events)
+
+    def expire(self, now: int) -> tuple[ReassemblyEvent, ...]:
+        """Drop every partial packet idle for more than the reassembly timeout."""
+
+        events: list[ReassemblyEvent] = []
+        for key in list(self._partials):
+            partial = self._partials[key]
+            if now - partial.last_used > self.timeout_us:
+                del self._partials[key]
+                events.append(
+                    self._dropped(
+                        ReassemblyDropReason.TIMEOUT,
+                        partial.last_used + self.timeout_us,
+                        None,
+                        f"no frame for {self.timeout_us} us after {len(partial.frames)} frame(s)",
+                        partial.can_fields,
+                    )
+                )
+        return tuple(events)
+
+    @staticmethod
+    def _dropped(
+        reason: ReassemblyDropReason,
+        time: int,
+        frame: CspCanFrame | None,
+        detail: str,
+        can_fields: CspCanIdFields | None = None,
+        *,
+        limit: int | None = None,
+    ) -> ReassemblyEvent:
+        return ReassemblyEvent(
+            kind="dropped",
+            time=time,
+            frame=frame,
+            reason=reason,
+            detail=detail,
+            sender=None if can_fields is None else can_fields.sender,
+            destination=None if can_fields is None else can_fields.destination,
+            limit=limit,
+        )
+
+
+def _validate_max_packet_bytes(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise CspV2RangeError(f"max_packet_bytes must be a positive integer, got {value!r}")
+    return value
 
 
 def _pack_can_id(fields: CspCanIdFields) -> int:
@@ -374,9 +818,12 @@ def _unpack_header_extension(
     )
 
 
-def _validate_single_frame_csp_fields(fields: CspFields) -> None:
+def _validate_csp_fields(fields: CspFields) -> None:
     if fields.flags & CSP_FLAG_FRAGMENT:
-        raise CspV2FrameError("CSP_FFRAG packets are outside the v1 single-frame profile")
+        raise CspV2FrameError("CSP_FFRAG packets are not supported")
+
+
+_validate_single_frame_csp_fields = _validate_csp_fields
 
 
 def _validate_single_frame_can_fields(fields: CspCanIdFields) -> None:
@@ -432,21 +879,31 @@ __all__ = [
     "CSP_PRIO_NORM",
     "CSP_V2_ADDRESS_MAX",
     "CSP_V2_CAN_HEADER_EXTENSION_BYTES",
+    "CSP_V2_CFP_CONTINUATION_PAYLOAD_BYTES",
+    "CSP_V2_DEFAULT_MAX_PACKET_BYTES",
     "CSP_V2_FLAGS_MAX",
     "CSP_V2_PORT_MAX",
     "CSP_V2_PRIORITY_MAX",
+    "CSP_V2_REASSEMBLY_TIMEOUT_US",
     "CSP_V2_SINGLE_FRAME_MAX_PAYLOAD_BYTES",
     "EXTENDED_CAN_ID_MAX",
     "STANDARD_CAN_ID_MAX",
     "CspCanFrame",
     "CspCanIdFields",
     "CspFields",
+    "CspFragmenter",
     "CspPriority",
+    "CspReassembler",
     "CspV2CodecError",
     "CspV2FrameError",
     "CspV2RangeError",
     "DecodedCspPacket",
+    "ReassemblyDropReason",
+    "ReassemblyEvent",
+    "decode_can_id",
+    "decode_first_frame_header",
     "decode_frame",
+    "fragment_packet",
     "pack",
     "unpack",
 ]

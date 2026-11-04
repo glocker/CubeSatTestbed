@@ -11,7 +11,9 @@ v1 implements **CSP v2 only**, targeting:
 - libcsp-compatible CSP v2 packet pack/unpack;
 - classic CAN 2.0 frames with 8-byte data fields;
 - extended 29-bit CAN identifiers only;
-- single-frame packets only — no CSP fragmentation/reassembly.
+- packets of any length up to the node's `max_packet_bytes`: one CAN frame when
+  the payload (plus any CRC32/HMAC trailer) is 4 bytes or fewer, otherwise
+  several CFP2 frames — see [CFP2 fragmentation](#cfp2-fragmentation-and-reassembly).
 
 The config exposes the logical CSP fields required by libcsp/CSP routing:
 `priority`, `source`, `destination`, `destination_port`, `source_port`,
@@ -24,8 +26,7 @@ Planned later, not implemented in v1:
 
 - CSP v1 for legacy hardware;
 - raw CAN/DBC adapter;
-- custom mission codec plugin;
-- CSP fragmentation/reassembly.
+- custom mission codec plugin.
 
 This project does not reuse or expose the CAN wire protocol from the
 `AetherFlow` project; the signal codec design may reuse lessons learned there,
@@ -191,13 +192,69 @@ endianness, scalar signed/unsigned integers and IEEE 754 floats, `scale`/
 arrays, bit-level enums, Motorola/Intel bit numbering, or custom field plugins
 in v1.
 
+## CFP2 fragmentation and reassembly
+
+A CSP packet whose payload does not fit one CAN frame travels as several
+frames, exactly as libcsp `v2.1` sends them (CFP2, libcsp's CAN fragmentation
+protocol). The layout is fixed by the multi-frame golden vectors
+(`tests/golden_vectors/multi_frame_*`):
+
+- the **first frame** has `begin` set and carries the 4-byte CSP header
+  extension plus up to 4 payload bytes (the other 16 header bits are in the
+  29-bit CAN ID);
+- every **later frame** carries up to 8 payload bytes, no header, and a
+  `frame_count` that counts 1, 2, ... and wraps from 7 to 0;
+- the **last frame** has `end` set — there is no length field;
+- a 2-bit **packet counter** tells consecutive packets from one sender apart;
+- the CRC32/HMAC trailer libcsp appends counts as payload, so a packet with
+  either flag needs a second frame even for a 4-byte payload.
+
+Each node has a `max_packet_bytes` setting (default 256, libcsp's default
+`CSP_BUFFER_SIZE`): the most payload, trailer included, it can send or
+reassemble. A real board can be built with a different value than its peers, so
+it is a per-node setting:
+
+```toml
+[nodes.payload]
+mode = "simulated"
+module_type = "simple_payload"
+address = 3
+max_packet_bytes = 8
+```
+
+A command or telemetry layout longer than the *sending* node's limit is a config
+error (its libcsp could not build the packet). A packet longer than the
+*receiving* node's limit is sent and then dropped by that node.
+
+A receiving node discards a packet, as libcsp does, when a frame is missing or
+out of order (`frame_lost`), the packet outgrows the node's limit (`overflow`),
+a continuation frame has no packet in progress (`orphan_fragment`), a new first
+frame arrives mid-packet (`restarted`), the frame or header is invalid
+(`malformed`), or no frame arrives for one virtual second (`timeout`). Nothing is
+discarded silently:
+
+- `run` prints a `DROP t=... node=... reason=... detail=...` line per dropped
+  packet before the summary (`SUMMARY` gains `dropped_packets=N`);
+- `--json` carries a `dropped_packets` list;
+- `--trace` writes the same `DROP` line at the instant it happened, and traces
+  every fragment (`cfp=begin|more|end pc=... fc=...`) with the reassembled
+  packet (`frames=N payload=...`) on the last one.
+
+A dropped packet does not fail the run by itself; an assertion that needed it
+does. Reassembly runs on virtual time, so the same frames at the same times give
+the same result on every run.
+
+Still out of scope: CSP v1, other physical layers (KISS, ZMQ), RDP, and a
+packet carrying several telemetry signals (each signal is still its own packet).
+
 ## Telemetry wire encoding
 
 Every configured telemetry signal requires a byte-aligned wire layout
 (`offset`, `length`, `type`, and optionally `endian`/`scale`/`offset_value`) —
 see [`configs/schema/module_schema.md`](../configs/schema/module_schema.md)
 for the field reference. A simulated module's telemetry is encoded through
-that layout into its own single-frame CSP payload and sent on the bus every
+that layout into its own CSP packet (one signal per packet, as one or several
+CAN frames) and sent on the bus every
 physical step; the scenario runner (and any assertion) only ever observes
 telemetry by decoding that same frame back, the same path a real bus listener
 or hardware peer would use. There is no path that lets an assertion read a

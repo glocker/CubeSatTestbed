@@ -142,7 +142,7 @@ The committed fixture contract is:
 
 ## v1 boundaries
 
-- No CSP fragmentation/reassembly.
+- CSP packets longer than one CAN frame are fragmented and reassembled with libcsp-compatible CFP2; no RDP.
 - No raw CAN/DBC adapter.
 - No custom protocol plugin.
 - No ACK waiting in OBC Peer rules.

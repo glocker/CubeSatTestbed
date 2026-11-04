@@ -25,6 +25,7 @@ from cubesat_testbed.examples import (
 from cubesat_testbed.scenario import (
     ScenarioRunResult,
     build_obc_rules_from_file,
+    format_dropped_packet,
     format_junit_error_xml,
     format_junit_xml,
     run_scenario_files,
@@ -230,6 +231,8 @@ def _run_command(args: argparse.Namespace) -> int:
     if args.json:
         _print_json(_result_payload(result, exit_code=exit_code))
     elif not args.quiet:
+        for dropped in result.dropped_packets:
+            print(format_dropped_packet(dropped))
         _print_summary(result)
     return exit_code
 
@@ -367,6 +370,7 @@ def _print_summary(result: ScenarioRunResult) -> None:
         f"SUMMARY scenario={result.scenario_name!r} "
         f"assertions={total} passed={passed} failed={failed} "
         f"started_at={result.started_at} finished_at={result.finished_at}"
+        + (f" dropped_packets={len(result.dropped_packets)}" if result.dropped_packets else "")
     )
 
 
@@ -386,6 +390,17 @@ def _result_payload(result: ScenarioRunResult, *, exit_code: int) -> dict[str, o
             "failed": failed,
             "results": [_assertion_payload(assertion) for assertion in result.assertions],
         },
+        "dropped_packets": [
+            {
+                "time": dropped.time,
+                "node": dropped.destination,
+                "sender": dropped.sender,
+                "reason": dropped.reason,
+                "detail": dropped.detail,
+                "limit": dropped.limit,
+            }
+            for dropped in result.dropped_packets
+        ],
     }
 
 

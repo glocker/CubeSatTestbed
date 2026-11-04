@@ -26,10 +26,10 @@ from pydantic import (
 
 from cubesat_testbed.protocol.csp_v2 import (
     CSP_V2_ADDRESS_MAX,
+    CSP_V2_DEFAULT_MAX_PACKET_BYTES,
     CSP_V2_FLAGS_MAX,
     CSP_V2_PORT_MAX,
     CSP_V2_PRIORITY_MAX,
-    CSP_V2_SINGLE_FRAME_MAX_PAYLOAD_BYTES,
 )
 
 _RESERVED_PARAM_NAMES = frozenset({"name", "endpoint"})
@@ -167,7 +167,13 @@ TransportConfig: TypeAlias = Annotated[
 
 
 class CommandMapping(BaseModel):
-    """Named command metadata required to encode a single CSP v2 command frame."""
+    """Named command metadata required to encode a CSP v2 command packet.
+
+    ``payload_hex`` may be longer than one CAN frame holds: the packet is sent
+    as several CFP2 frames. It must fit the sending node's ``max_packet_bytes``,
+    which :class:`TestbedConfig` checks; a receiving node with a smaller limit
+    drops the packet when it arrives.
+    """
 
     model_config = _SCHEMA_MODEL_CONFIG
 
@@ -186,13 +192,7 @@ class CommandMapping(BaseModel):
     @field_validator("payload_hex", mode="before")
     @classmethod
     def _coerce_payload_hex(cls, value: object) -> bytes:
-        payload = _coerce_hex_bytes(value)
-        if len(payload) > CSP_V2_SINGLE_FRAME_MAX_PAYLOAD_BYTES:
-            raise ValueError(
-                "command payload_hex must fit product-v1 single-frame CSP payload "
-                f"({CSP_V2_SINGLE_FRAME_MAX_PAYLOAD_BYTES} bytes max)"
-            )
-        return payload
+        return _coerce_hex_bytes(value)
 
 
 class TelemetryMapping(BaseModel):
@@ -203,7 +203,7 @@ class TelemetryMapping(BaseModel):
 
     ``offset``/``length``/``type``/``endian``/``scale``/``offset_value`` declare
     the byte-aligned wire layout used to encode this signal into its own
-    single-frame CSP payload (and decode it back); every telemetry mapping
+    CSP packet (and decode it back); every telemetry mapping
     requires one, so a configured signal can always be produced/consumed as
     real bytes on the bus, not just read out of Python state. ``enum``
     optionally maps the field's raw integer wire value to a label string (and
@@ -369,6 +369,15 @@ class NodeConfig(BaseModel):
 
     mode: NodeMode
     address: CspAddress
+    max_packet_bytes: int = Field(default=CSP_V2_DEFAULT_MAX_PACKET_BYTES, ge=1)
+    """Largest CSP payload this node can send or reassemble, trailer included.
+
+    Mirrors the libcsp build option ``CSP_BUFFER_SIZE`` (default 256 in
+    ``v2.1``): libcsp keeps every packet in a fixed-size buffer chosen when the
+    library is built, so a real board may differ from its peers. A packet over
+    the *receiving* node's limit is dropped by that node, visibly.
+    """
+
     module_type: str | None = None
     """A module type registered in :mod:`cubesat_testbed.modules.registry`.
 
@@ -525,6 +534,17 @@ class TestbedConfig(BaseModel):
                         f"command {node_name}.{command_name} targets unknown node "
                         f"{command.target!r}"
                     )
+                # Only the sender's limit is a config error: its libcsp could not
+                # even build the packet. A target with a smaller buffer is a real
+                # situation to simulate, so that packet is sent and the target
+                # drops it, visibly, at run time.
+                limit = node.max_packet_bytes
+                if len(command.payload_hex) > limit:
+                    raise ValueError(
+                        f"command {node_name}.{command_name} payload_hex is "
+                        f"{len(command.payload_hex)} bytes, over the sending node "
+                        f"{node_name!r} max_packet_bytes={limit}"
+                    )
 
     def _validate_telemetry_mappings(self) -> None:
         owners_by_signal: dict[str, str] = {}
@@ -533,6 +553,13 @@ class TestbedConfig(BaseModel):
                 _validate_identifier("telemetry mapping name", telemetry_name)
                 signal = mapping.resolved_signal(node_name, telemetry_name)
                 _validate_path("telemetry signal", signal, min_segments=3)
+                wire_length = mapping.offset + mapping.length
+                if wire_length > node.max_packet_bytes:
+                    raise ValueError(
+                        f"telemetry mapping {node_name}.{telemetry_name} needs a "
+                        f"{wire_length}-byte payload, over {node_name!r} "
+                        f"max_packet_bytes={node.max_packet_bytes}"
+                    )
                 if not signal.startswith(f"{node_name}.telemetry."):
                     raise ValueError(
                         f"telemetry mapping {node_name}.{telemetry_name} resolves to {signal!r}; "

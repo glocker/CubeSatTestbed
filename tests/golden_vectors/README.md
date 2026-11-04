@@ -68,8 +68,9 @@ during startup with an explicit error saying so.
    -a <source-address>       CSP source/interface address (default: 1)
    -d <destination-address>  CSP destination address (default: 2)
    -r <priority>             CSP priority 0-3: 0=critical 1=high 2=norm 3=low
-   -l <payload-length>       payload bytes, 0-4; incrementing pattern from 0x55
+   -l <payload-length>       payload bytes, 0-200; incrementing pattern from 0x55
    -o <flag[,flag...]>       comma-separated CSP options: crc32, rdp, hmac
+   -n <packets>              send this many identical packets back to back, 1-8
    ```
 
    `-o rdp` cannot be captured this way: RDP is a stateful, connection-oriented
@@ -117,6 +118,25 @@ libcsp's on-wire behavior still matches every committed fixture.
 | `flag_hmac` | `CSP_FLAG_HMAC` set |
 | `reverse_direction` | `src=2 dst=1`: the same node pair as the baseline, addressed the other way |
 
+### Multi-frame vectors
+
+One CSP packet carried by several CAN frames, in capture order. Frame counts
+below are what libcsp `v2.1` puts on `vcan0`.
+
+| Vector | Command arguments | Covers |
+| --- | --- | --- |
+| `multi_frame_5` | `-l 5` | smallest multi-frame packet: 4 payload bytes in the first frame, 1 in the second |
+| `multi_frame_8` | `-l 8` | 4 + 4 payload bytes; the second frame is not full |
+| `multi_frame_12` | `-l 12` | 4 + 8: two frames, the second exactly full (three 4-byte telemetry signals in one packet) |
+| `multi_frame_20` | `-l 20` | three frames; `frame_count` 0, 1, 2 and `end` only on the last |
+| `multi_frame_64_counter_wrap` | `-l 64` | nine frames, so the 3-bit `frame_count` wraps from 7 to 0 |
+| `multi_frame_crc32` | `-l 4 -o crc32` | a payload that fits one frame whose 4-byte CRC32 trailer forces a second |
+| `multi_frame_hmac` | `-l 4 -o hmac` | the same with the HMAC trailer |
+| `multi_frame_high_address` | `-a 65 -d 66 -l 12` | the 6-bit `sender` truncation on every fragment, not only the first |
+| `multi_frame_reverse_direction` | `-a 2 -d 1 -l 12` | the multi-frame packet in the other direction |
+| `multi_frame_priority_critical` | `-r 0 -l 12` | priority repeated in every fragment's CAN ID |
+| `multi_frame_two_packets` | `-l 12 -n 2` | two back-to-back packets from one sender: the CFP2 packet counter increments |
+
 `CSP_FLAG_RDP` has no committed vector (see the generation-workflow note
 above); it is covered by a synthetic pack/decode round trip instead.
 
@@ -151,6 +171,27 @@ Committed fixture pairs must record:
 - extended 29-bit CAN ID, either in parsed fixture data or asserted by tests;
 - raw CAN payload bytes, either in parsed fixture data or asserted by tests;
 - expected packet meaning.
+
+### Multi-frame fixtures
+
+A multi-frame capture file holds one `candump` line per CAN frame, in the order
+libcsp sent them, and its `*.meta.toml` records the whole ordered sequence
+instead of a single frame:
+
+```toml
+packet_count = 1                      # CSP packets in the capture
+expected_frame_count = 2              # CAN frames in the capture
+expected_extended_can_ids = ["0x10004082", "0x10004085"]
+expected_frame_payloads_hex = ["00 04 14 80 55 56 57 58", "59 5A 5B 5C 5D 5E 5F 60"]
+expected_reassembled_payloads_hex = ["55 56 57 58 59 5a 5b 5c 5d 5e 5f 60"]
+```
+
+`expected_reassembled_payloads_hex` holds one entry per CSP packet: the payload
+exactly as `csp_client` handed it to libcsp, plus the CRC32/HMAC trailer libcsp
+appended when a flag is set. Frames of consecutive packets are listed in capture
+order, `expected_frame_count / packet_count` frames per packet. In the CAN ID,
+the low bits are `end` (bit 0), `begin` (bit 1) and `frame_count` (bits 2-4);
+bits 5-6 are the CFP2 packet counter.
 
 Python implementation starts after these fixtures are fixed. The Python CSP v2
 codec must match the committed vectors byte-for-byte.

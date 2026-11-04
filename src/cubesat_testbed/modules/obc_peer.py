@@ -39,7 +39,14 @@ from cubesat_testbed.modules.base import (
     _validate_identifier,
     _validate_optional_endpoint,
 )
-from cubesat_testbed.protocol.csp_v2 import CspCanFrame, CspFields, CspV2CodecError, pack
+from cubesat_testbed.protocol.csp_v2 import (
+    CSP_V2_DEFAULT_MAX_PACKET_BYTES,
+    CspCanFrame,
+    CspFields,
+    CspFragmenter,
+    CspV2CodecError,
+    fragment_packet,
+)
 from cubesat_testbed.transport.base import EndpointId, TransportAdapter, TransportEnvelope
 
 if TYPE_CHECKING:
@@ -212,8 +219,14 @@ class ObcPeerNamedCommand:
         object.__setattr__(self, "payload", payload)
         self.encode()
 
-    def encode(self, *, packet_count: int = 0) -> CspCanFrame:
-        """Encode this named command into one product-v1 CSP-over-CAN frame."""
+    def encode(self, *, fragmenter: CspFragmenter | None = None) -> tuple[CspCanFrame, ...]:
+        """Encode this named command into the CSP-over-CAN frames that carry it.
+
+        One frame when the payload fits (4 bytes or fewer), several CFP2 frames
+        otherwise. Pass the sending node's ``fragmenter`` so consecutive
+        commands advance its CFP2 packet counter and respect its packet size
+        limit; without one the packet counter is 0.
+        """
 
         fields = _validated_csp_fields(
             priority=self.priority,
@@ -224,9 +237,11 @@ class ObcPeerNamedCommand:
             flags=self.flags,
         )
         try:
-            return pack(fields, self.payload, packet_count=packet_count)
+            if fragmenter is not None:
+                return fragmenter.fragment(fields, self.payload)
+            return fragment_packet(fields, self.payload)
         except CspV2CodecError as exc:
-            raise ModuleError(f"named command cannot be encoded as a v1 CSP frame: {exc}") from exc
+            raise ModuleError(f"named command cannot be encoded as CSP frames: {exc}") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +252,7 @@ class ObcPeerConfig:
     endpoint: EndpointId | None = None
     rules: tuple[ObcPeerRule, ...] = ()
     commands: Mapping[str, ObcPeerNamedCommand] = field(default_factory=dict)
+    max_packet_bytes: int = CSP_V2_DEFAULT_MAX_PACKET_BYTES
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", _validate_identifier("module name", self.name))
@@ -270,7 +286,10 @@ class ObcPeerActionResult:
 
     action: ObcPeerRuleAction
     command_envelope: TransportEnvelope | None = None
+    """The last frame of the command, the one that completes the packet."""
     fault_result: FaultActionResult = None
+    command_envelopes: tuple[TransportEnvelope, ...] = ()
+    """Every frame the command was sent as, in bus order."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,6 +326,7 @@ class ObcPeerModule(SimulatedModule):
     ) -> None:
         self.config = ObcPeerConfig() if config is None else config
         self._transport = transport
+        self._fragmenter = CspFragmenter(max_packet_bytes=self.config.max_packet_bytes)
         self._engine: DiscreteEventEngine | None = None
         self._event_handler: EventHandler = self.handle_event
         self._runtime_by_rule: dict[str, _RuleRuntimeState] = {
@@ -342,6 +362,7 @@ class ObcPeerModule(SimulatedModule):
                 endpoint=node.address,
                 rules=tuple(rules),
                 commands=obc_peer_commands_from_testbed_config(setup, source_node),
+                max_packet_bytes=node.max_packet_bytes,
             ),
             transport=transport,
             fault_engine=fault_engine,
@@ -464,8 +485,13 @@ class ObcPeerModule(SimulatedModule):
         action_results: list[ObcPeerActionResult] = []
         for action in rule.actions:
             if isinstance(action, ObcPeerCommandAction):
+                envelopes = self._emit_command(action)
                 action_results.append(
-                    ObcPeerActionResult(action=action, command_envelope=self._emit_command(action))
+                    ObcPeerActionResult(
+                        action=action,
+                        command_envelope=envelopes[-1],
+                        command_envelopes=envelopes,
+                    )
                 )
             else:
                 action_results.append(
@@ -482,7 +508,7 @@ class ObcPeerModule(SimulatedModule):
             action_results=tuple(action_results),
         )
 
-    def _emit_command(self, action: ObcPeerCommandAction) -> TransportEnvelope:
+    def _emit_command(self, action: ObcPeerCommandAction) -> tuple[TransportEnvelope, ...]:
         if self._transport is None:
             raise ModuleError("OBC Peer command actions require a transport adapter")
         try:
@@ -490,7 +516,8 @@ class ObcPeerModule(SimulatedModule):
         except KeyError as exc:
             raise ModuleError(f"OBC Peer command {action.command!r} is not configured") from exc
 
-        return self._transport.send(command.encode(), source=self.default_source)
+        frames = command.encode(fragmenter=self._fragmenter)
+        return tuple(self._transport.send(frame, source=self.default_source) for frame in frames)
 
     def _apply_fault(self, action: ObcPeerFaultAction, *, now: VirtualTime) -> FaultActionResult:
         if self.fault_engine is None:
