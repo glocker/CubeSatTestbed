@@ -161,6 +161,30 @@ def test_golden_vector_expected_values_match_capture(golden_vector: GoldenVector
         assert first_frame.payload == expected_payload
 
 
+def test_multi_frame_vector_metadata_matches_capture(golden_vector: GoldenVector) -> None:
+    metadata = golden_vector.metadata
+    if "expected_frame_count" not in metadata:
+        pytest.skip("single-frame vector")
+
+    frames = golden_vector.frames
+    assert metadata["expected_frame_count"] == len(frames)
+    assert len(frames) > 1 or metadata["packet_count"] > 1
+
+    expected_ids = [
+        parse_can_id_hex(_non_empty_str(item)) for item in metadata["expected_extended_can_ids"]
+    ]
+    expected_payloads = [
+        parse_payload_hex(_non_empty_str(item)) for item in metadata["expected_frame_payloads_hex"]
+    ]
+    assert [frame.can_id for frame in frames] == expected_ids
+    assert [frame.payload for frame in frames] == expected_payloads
+
+    packet_count = metadata["packet_count"]
+    assert isinstance(packet_count, int)
+    assert len(metadata["expected_reassembled_payloads_hex"]) == packet_count
+    assert len(frames) % packet_count == 0
+
+
 def _non_empty_str(value: object) -> str:
     assert isinstance(value, str)
     assert value.strip()

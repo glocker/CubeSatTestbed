@@ -38,8 +38,9 @@ Invalid combinations fail during Pydantic validation. Examples:
 - `params` is only valid on `simulated` nodes and must match the target
   module's own parameter names/types/ranges.
 
-Command mappings define the CSP ports/flags and optional product-v1 single-frame
-payload bytes:
+Command mappings define the CSP ports/flags and optional payload bytes. A payload
+over 4 bytes is sent as several CFP2 frames; it must fit the sending node's
+`max_packet_bytes` (default 256):
 
 ```toml
 [nodes.obc.commands.payload_power_off]
@@ -197,8 +198,8 @@ codec itself has no notion of enums. No bit-level packing, arrays,
 Motorola/Intel bit numbering, or custom field plugins in v1.
 
 Every telemetry mapping's `offset`/`length`/`type` are required: a configured
-signal is always encoded through this layout into its own single-frame CSP
-payload when transmitted, and decoded back through the same layout when
+signal is always encoded through this layout into its own CSP packet
+(several CAN frames when `offset + length` is over 4) when transmitted, and decoded back through the same layout when
 received — assertions and rules only ever see the decoded result, never a
 module's raw Python value. See
 [`docs/v1-scope.md`](../../docs/v1-scope.md#telemetry-wire-encoding) for the

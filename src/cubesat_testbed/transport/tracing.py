@@ -16,6 +16,16 @@ monitor stream reads it back and decodes it. That is not duplication to be
 filtered out: it is exactly the round trip that makes a scenario assertion an
 observation of the wire rather than of module state.
 
+A packet too long for one CAN frame is traced fragment by fragment: every frame
+gets its own line carrying its CFP2 fields (``cfp=begin|more|end``, packet
+counter ``pc``, frame counter ``fc``), the first one also names the route, and
+the line of the last frame adds the reassembled packet (``frames=N``, the whole
+``payload`` and the same annotation a single-frame packet gets). Reassembly here
+is a passive observer with no size limit, kept separately for TX and RX because
+an in-memory frame is traced once in each direction; whether a node *accepted*
+the packet, or dropped it as too large, lost or late, is the runner's business
+and is reported as ``DROP`` lines.
+
 Tracing is observability only. It never alters delivery, ordering or virtual
 time, and it never raises: a frame the codec cannot decode is reported as such,
 because unexpected traffic is often the reason a trace was turned on.
@@ -26,7 +36,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TextIO
 
-from cubesat_testbed.protocol.csp_v2 import CspCanFrame, CspV2CodecError, DecodedCspPacket
+from cubesat_testbed.protocol.csp_v2 import (
+    CspCanFrame,
+    CspCanIdFields,
+    CspReassembler,
+    CspV2CodecError,
+    DecodedCspPacket,
+    decode_can_id,
+    decode_first_frame_header,
+)
 from cubesat_testbed.protocol.csp_v2 import decode_frame as _decode_frame
 from cubesat_testbed.transport.base import EndpointId, TransportAdapter, TransportEnvelope
 
@@ -65,6 +83,10 @@ class TracingTransportAdapter(TransportAdapter):
         self._stream = stream
         self._now = now
         self._annotate = annotate
+        self._reassemblers = {
+            "TX": CspReassembler(max_packet_bytes=None),
+            "RX": CspReassembler(max_packet_bytes=None),
+        }
 
     @property
     def inner(self) -> TransportAdapter:
@@ -109,7 +131,13 @@ class TracingTransportAdapter(TransportAdapter):
 
     def _trace(self, direction: str, envelope: TransportEnvelope) -> None:
         self._stream.write(
-            format_trace_line(direction, envelope, now=self._now_value(), annotate=self._annotate)
+            format_trace_line(
+                direction,
+                envelope,
+                now=self._now_value(),
+                annotate=self._annotate,
+                reassembler=self._reassemblers[direction],
+            )
         )
         self._stream.write("\n")
         self._stream.flush()
@@ -124,8 +152,13 @@ def format_trace_line(
     *,
     now: int | None = None,
     annotate: FrameAnnotator | None = None,
+    reassembler: CspReassembler | None = None,
 ) -> str:
     """Format one frame as a single ``key=value`` trace line.
+
+    ``reassembler`` is fed every fragment of a multi-frame packet so the line of
+    its last frame can show the whole packet; without one, fragments are
+    described by their CFP2 fields alone.
 
     ``data`` is the full CAN data field as a bus analyzer or ``candump`` would
     show it; ``payload`` is just the CSP application bytes that follow the
@@ -141,6 +174,12 @@ def format_trace_line(
     parts.append(direction)
     parts.append(f"can_id=0x{frame.can_id:08X}")
     parts.append(f"dlc={frame.dlc}")
+
+    can_fields = decode_can_id(frame.can_id) if frame.is_extended_id else None
+    if can_fields is not None and not (can_fields.begin and can_fields.end):
+        return _format_fragment_line(
+            parts, frame, can_fields, now=now, annotate=annotate, reassembler=reassembler
+        )
 
     try:
         packet = _decode_frame(frame)
@@ -166,6 +205,56 @@ def format_trace_line(
     annotation = None if annotate is None else annotate(packet)
     if annotation:
         parts.append(annotation)
+    return " ".join(parts)
+
+
+def _format_fragment_line(
+    parts: list[str],
+    frame: CspCanFrame,
+    can_fields: CspCanIdFields,
+    *,
+    now: int | None,
+    annotate: FrameAnnotator | None,
+    reassembler: CspReassembler | None,
+) -> str:
+    """Describe one frame of a multi-frame packet; see the module docstring."""
+
+    position = "begin" if can_fields.begin else "end" if can_fields.end else "more"
+    parts.append(f"cfp={position}")
+    parts.append(f"pc={can_fields.packet_count}")
+    parts.append(f"fc={can_fields.frame_count}")
+
+    if can_fields.begin:
+        try:
+            header = decode_first_frame_header(frame)
+        except CspV2CodecError as exc:
+            parts.append(f"data={_hex(frame.data)}")
+            parts.append(f"undecodable={str(exc)!r}")
+            return " ".join(parts)
+        parts.extend(
+            (
+                f"pri={header.priority}",
+                f"src={header.source}",
+                f"dst={header.destination}",
+                f"dport={header.destination_port}",
+                f"sport={header.source_port}",
+                f"flags=0x{header.flags:02X}",
+            )
+        )
+    else:
+        parts.append(f"dst={can_fields.destination}")
+        parts.append(f"sender={can_fields.sender}")
+    parts.append(f"data={_hex(frame.data)}")
+
+    if reassembler is not None:
+        for event in reassembler.feed(frame, now=0 if now is None else now):
+            packet = event.packet
+            if event.kind == "complete" and packet is not None:
+                parts.append(f"frames={packet.frame_count}")
+                parts.append(f"payload={_hex(packet.payload)}")
+                annotation = None if annotate is None else annotate(packet)
+                if annotation:
+                    parts.append(annotation)
     return " ".join(parts)
 
 

@@ -1,0 +1,17 @@
+name = "multi_frame_8"
+capture = "multi_frame_8.txt"
+libcsp_repo = "https://github.com/libcsp/libcsp"
+libcsp_tag = "v2.1"
+libcsp_commit = "48f7fb0"
+command = "/app/tests/golden_vectors/bin/csp_client -c vcan0 -p -d 2 -l 8"
+capture_command = "candump -n 2 vcan0 > /app/tests/golden_vectors/multi_frame_8.txt"
+interface = "vcan0"
+meaning = "Multi-frame CSP v2 ping-port request (CFP2 fragmentation), 8-byte payload: 4 + 4 payload bytes, the second frame is not full."
+protocol = "CSP v2 over classic CAN 2.0B extended frames, CFP2 fragmented"
+source_address = 1
+destination_address = 2
+packet_count = 1
+expected_frame_count = 2
+expected_extended_can_ids = ["0x10004082", "0x10004085"]
+expected_frame_payloads_hex = ["00 04 14 80 55 56 57 58", "59 5A 5B 5C"]
+expected_reassembled_payloads_hex = ["55 56 57 58 59 5a 5b 5c"]

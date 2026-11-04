@@ -1,0 +1,17 @@
+name = "multi_frame_crc32"
+capture = "multi_frame_crc32.txt"
+libcsp_repo = "https://github.com/libcsp/libcsp"
+libcsp_tag = "v2.1"
+libcsp_commit = "48f7fb0"
+command = "/app/tests/golden_vectors/bin/csp_client -c vcan0 -p -d 2 -o crc32 -l 4"
+capture_command = "candump -n 2 vcan0 > /app/tests/golden_vectors/multi_frame_crc32.txt"
+interface = "vcan0"
+meaning = "Multi-frame CSP v2 ping-port request (CFP2 fragmentation), 4-byte payload with CSP_FLAG_CRC32: the payload alone fits one frame, the 4-byte CRC32 trailer libcsp appends forces a second."
+protocol = "CSP v2 over classic CAN 2.0B extended frames, CFP2 fragmented"
+source_address = 1
+destination_address = 2
+packet_count = 1
+expected_frame_count = 2
+expected_extended_can_ids = ["0x10004082", "0x10004085"]
+expected_frame_payloads_hex = ["00 04 14 81 55 56 57 58", "AB F7 49 CE"]
+expected_reassembled_payloads_hex = ["55 56 57 58 ab f7 49 ce"]

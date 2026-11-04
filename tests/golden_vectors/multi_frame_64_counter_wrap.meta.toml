@@ -1,0 +1,17 @@
+name = "multi_frame_64_counter_wrap"
+capture = "multi_frame_64_counter_wrap.txt"
+libcsp_repo = "https://github.com/libcsp/libcsp"
+libcsp_tag = "v2.1"
+libcsp_commit = "48f7fb0"
+command = "/app/tests/golden_vectors/bin/csp_client -c vcan0 -p -d 2 -l 64"
+capture_command = "candump -n 9 vcan0 > /app/tests/golden_vectors/multi_frame_64_counter_wrap.txt"
+interface = "vcan0"
+meaning = "Multi-frame CSP v2 ping-port request (CFP2 fragmentation), 64-byte payload: nine frames, so the 3-bit frame_count wraps from 7 back to 0 on the last frame."
+protocol = "CSP v2 over classic CAN 2.0B extended frames, CFP2 fragmented"
+source_address = 1
+destination_address = 2
+packet_count = 1
+expected_frame_count = 9
+expected_extended_can_ids = ["0x10004082", "0x10004084", "0x10004088", "0x1000408C", "0x10004090", "0x10004094", "0x10004098", "0x1000409C", "0x10004081"]
+expected_frame_payloads_hex = ["00 04 14 80 55 56 57 58", "59 5A 5B 5C 5D 5E 5F 60", "61 62 63 64 65 66 67 68", "69 6A 6B 6C 6D 6E 6F 70", "71 72 73 74 75 76 77 78", "79 7A 7B 7C 7D 7E 7F 80", "81 82 83 84 85 86 87 88", "89 8A 8B 8C 8D 8E 8F 90", "91 92 93 94"]
+expected_reassembled_payloads_hex = ["55 56 57 58 59 5a 5b 5c 5d 5e 5f 60 61 62 63 64 65 66 67 68 69 6a 6b 6c 6d 6e 6f 70 71 72 73 74 75 76 77 78 79 7a 7b 7c 7d 7e 7f 80 81 82 83 84 85 86 87 88 89 8a 8b 8c 8d 8e 8f 90 91 92 93 94"]

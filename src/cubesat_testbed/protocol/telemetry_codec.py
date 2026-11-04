@@ -1,9 +1,11 @@
 """Bridges declarative telemetry config to the byte-aligned signal codec.
 
 Each configured :class:`~cubesat_testbed.config.parser.TelemetryMapping` owns
-exactly one product-v1 signal field occupying its own single-frame CSP
-payload; multi-field telemetry frames are not part of the v1 profile (this
-mirrors the CSP v2 codec's own single-frame-only scope). ``enum`` bridges
+exactly one product-v1 signal field occupying its own CSP packet; multi-field
+telemetry packets are not part of the v1 profile. The packet may be longer than
+one CAN frame (``offset + length`` over 4 bytes is sent as several CFP2
+frames); fragmentation is the transport layer's concern and this codec only
+ever sees the whole payload. ``enum`` bridges
 non-numeric Python telemetry values (e.g. ``power_status = "offline"``) to the
 codec's scalar-only wire values.
 """
@@ -30,7 +32,7 @@ class TelemetryCodecError(ValueError):
 
 
 def signal_field_for_mapping(name: str, mapping: TelemetryMapping) -> SignalField:
-    """Build the single-frame :class:`SignalField` declared by ``mapping``."""
+    """Build the :class:`SignalField` declared by ``mapping``."""
 
     try:
         return SignalField(
