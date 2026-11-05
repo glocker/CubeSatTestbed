@@ -172,6 +172,50 @@ Committed fixture pairs must record:
 - raw CAN payload bytes, either in parsed fixture data or asserted by tests;
 - expected packet meaning.
 
+### KISS (serial) vectors
+
+`kiss/` holds the same kind of fixtures for CSP v2 over a serial line with KISS
+framing. They need no `vcan0`: `scripts/capture-kiss.py` opens a pty pair, runs
+`csp_client -k <pty slave> -p ...` (libcsp's own KISS interface) and records the
+bytes libcsp writes. Regenerate them with:
+
+```sh
+docker compose exec -T libcsp-vectors /app/tests/golden_vectors/scripts/regenerate-kiss-vectors.sh
+```
+
+(`regenerate-vectors.sh` runs it too, which is what CI uses.) A capture file has
+one line per KISS frame: the exact wire bytes, `FEND` to `FEND` inclusive, as
+space-separated upper-case hex. Its `*.meta.toml` records `interface = "pty"`,
+the generation command and, in place of CAN IDs, `expected_frames_hex` (the wire
+frames) and `expected_packets_hex` (each frame with the KISS framing and escaping
+removed).
+
+What the vectors show about libcsp `v2.1`:
+
+- a frame is `C0 00 <escaped packet> C0`: `FEND`, the TNC command byte `0x00`,
+  the packet, `FEND`; inside, `0xC0` is sent as `DB DC` and `0xDB` as `DB DD`;
+- the packet is the 6-byte CSP v2 header (priority, destination, source, ports and
+  flags in network byte order, the full 14-bit addresses), the payload, and a
+  4-byte CRC32;
+- libcsp's KISS interface **always** appends that CRC32, whether or not
+  `CSP_FLAG_CRC32` is set; with the flag the payload already ends in the flag's own
+  4-byte trailer and a second CRC32 follows it (`flag_crc32`, `flag_hmac`);
+- the CRC32 is CRC-32C (Castagnoli, polynomial `0x82F63B78`, initial value and final
+  XOR `0xFFFFFFFF`), computed over the payload only -- not the header -- and sent
+  big-endian (`ping`: payload `55` gives `36 A9 9D 9E`);
+- there is no fragmentation: 64- and 200-byte payloads are one frame.
+
+| Vector | Covers |
+| --- | --- |
+| `ping` | baseline: `src=1 dst=2`, 1-byte payload |
+| `payload_empty`, `payload_64`, `payload_200` | payload bounds, no fragmentation |
+| `priority_critical`, `priority_low` | the priority field; `priority_low` puts `0xC0` in the header (escaped) |
+| `high_address`, `max_address` | 14-bit addresses kept whole, unlike the 6-bit CAN sender |
+| `reverse_direction` | the node pair addressed the other way |
+| `flag_crc32`, `flag_hmac` | flag trailer plus the KISS CRC32 |
+| `escape_fend`, `escape_fesc` | payloads containing the KISS control bytes |
+| `two_packets` | back-to-back frames |
+
 ### Multi-frame fixtures
 
 A multi-frame capture file holds one `candump` line per CAN frame, in the order

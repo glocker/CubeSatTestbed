@@ -1,0 +1,15 @@
+name = "max_address"
+capture = "max_address.txt"
+libcsp_repo = "https://github.com/libcsp/libcsp"
+libcsp_tag = "v2.1"
+libcsp_commit = "48f7fb0"
+command = "python3 /app/tests/golden_vectors/scripts/capture-kiss.py /app/tests/golden_vectors/kiss/max_address.txt 1 -- /app/tests/golden_vectors/bin/csp_client -k {tty} -p -a 16383 -d 16382"
+capture_command = "capture-kiss.py opens a pty pair, runs csp_client -k <pty slave> and records the bytes libcsp's KISS interface writes"
+interface = "pty"
+meaning = "Source 16383 destination 16382: the 14-bit address maximum in both header fields."
+protocol = "CSP v2 over KISS (serial), one CSP packet per frame"
+source_address = 16383
+destination_address = 16382
+expected_frame_count = 1
+expected_frames_hex = ["C0 00 BF FE FF FC 14 80 55 36 A9 9D 9E C0"]
+expected_packets_hex = ["BF FE FF FC 14 80 55 36 A9 9D 9E"]

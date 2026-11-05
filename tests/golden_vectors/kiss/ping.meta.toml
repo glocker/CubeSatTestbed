@@ -1,0 +1,15 @@
+name = "ping"
+capture = "ping.txt"
+libcsp_repo = "https://github.com/libcsp/libcsp"
+libcsp_tag = "v2.1"
+libcsp_commit = "48f7fb0"
+command = "python3 /app/tests/golden_vectors/scripts/capture-kiss.py /app/tests/golden_vectors/kiss/ping.txt 1 -- /app/tests/golden_vectors/bin/csp_client -k {tty} -p -d 2"
+capture_command = "capture-kiss.py opens a pty pair, runs csp_client -k <pty slave> and records the bytes libcsp's KISS interface writes"
+interface = "pty"
+meaning = "Baseline CSP v2 ping-port request over KISS from node 1 to node 2 with a 1-byte payload 0x55 and no CSP flags. libcsp appends its KISS CRC32 to every frame."
+protocol = "CSP v2 over KISS (serial), one CSP packet per frame"
+source_address = 1
+destination_address = 2
+expected_frame_count = 1
+expected_frames_hex = ["C0 00 80 02 00 04 14 80 55 36 A9 9D 9E C0"]
+expected_packets_hex = ["80 02 00 04 14 80 55 36 A9 9D 9E"]

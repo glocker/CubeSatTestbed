@@ -1,0 +1,15 @@
+name = "high_address"
+capture = "high_address.txt"
+libcsp_repo = "https://github.com/libcsp/libcsp"
+libcsp_tag = "v2.1"
+libcsp_commit = "48f7fb0"
+command = "python3 /app/tests/golden_vectors/scripts/capture-kiss.py /app/tests/golden_vectors/kiss/high_address.txt 1 -- /app/tests/golden_vectors/bin/csp_client -k {tty} -p -a 65 -d 66"
+capture_command = "capture-kiss.py opens a pty pair, runs csp_client -k <pty slave> and records the bytes libcsp's KISS interface writes"
+interface = "pty"
+meaning = "Source 65 destination 66: KISS carries the full 14-bit source address, unlike the 6-bit CAN-ID sender field."
+protocol = "CSP v2 over KISS (serial), one CSP packet per frame"
+source_address = 65
+destination_address = 66
+expected_frame_count = 1
+expected_frames_hex = ["C0 00 80 42 01 04 14 80 55 36 A9 9D 9E C0"]
+expected_packets_hex = ["80 42 01 04 14 80 55 36 A9 9D 9E"]
