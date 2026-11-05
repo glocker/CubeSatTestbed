@@ -2,6 +2,7 @@
 #include <csp/csp_error.h>
 #include <csp/csp_rtable.h>
 #include <csp/drivers/can_socketcan.h>
+#include <csp/drivers/usart.h>
 
 #include <errno.h>
 #include <stdbool.h>
@@ -28,6 +29,7 @@
 #define DEFAULT_PACKET_COUNT 1U
 #define MAX_PACKET_COUNT 8U
 #define PAYLOAD_BASE_BYTE 0x55U
+#define KISS_BAUDRATE 115200U
 
 /** Runtime options parsed from the vector helper command line. */
 struct options {
@@ -38,6 +40,8 @@ struct options {
     uint32_t csp_opts;
     uint16_t payload_length;
     uint16_t packet_count;
+    uint8_t payload_base;
+    const char *kiss_device;
     bool send_ping;
 };
 
@@ -51,6 +55,7 @@ static void print_usage(FILE *stream, const char *program) {
     fprintf(stream,
             "Usage: %s -p [-c can-interface] [-a source-address] [-d destination-address]\n"
             "          [-r priority] [-l payload-length] [-o flag[,flag...]] [-n packets]\n"
+            "          [-b base-byte] [-k kiss-device]\n"
             "\n"
             "Generate libcsp CSP v2 SocketCAN traffic for repository golden vectors.\n"
             "\n"
@@ -69,6 +74,10 @@ static void print_usage(FILE *stream, const char *program) {
             "  -n <packets>            send this many identical packets back to back, 1-%u\n"
             "                          (default: %u); consecutive packets carry an\n"
             "                          incrementing CFP2 packet counter\n"
+            "  -b <base-byte>          first payload byte (default: 0x%02x); later bytes increment,\n"
+            "                          so e.g. 0xc0 puts KISS FEND/FESC bytes on the wire\n"
+            "  -k <kiss-device>        send over a KISS serial interface on this tty/pty instead of\n"
+            "                          SocketCAN; -c is then ignored (%u baud)\n"
             "  -h                      show this help\n",
             program,
             DEFAULT_CAN_INTERFACE,
@@ -79,7 +88,9 @@ static void print_usage(FILE *stream, const char *program) {
             DEFAULT_PAYLOAD_LENGTH,
             PAYLOAD_BASE_BYTE,
             MAX_PACKET_COUNT,
-            DEFAULT_PACKET_COUNT);
+            DEFAULT_PACKET_COUNT,
+            PAYLOAD_BASE_BYTE,
+            KISS_BAUDRATE);
 }
 
 /**
@@ -158,7 +169,7 @@ static bool parse_csp_opts(const char *value, uint32_t *result) {
 static bool parse_args(int argc, char **argv, struct options *options) {
     int opt;
     uint16_t parsed_u16;
-    while ((opt = getopt(argc, argv, "c:a:d:r:l:o:n:ph")) != -1) {
+    while ((opt = getopt(argc, argv, "c:a:d:r:l:o:n:b:k:ph")) != -1) {
         switch (opt) {
             case 'c':
                 options->can_interface = optarg;
@@ -200,6 +211,16 @@ static bool parse_args(int argc, char **argv, struct options *options) {
                     return false;
                 }
                 options->packet_count = parsed_u16;
+                break;
+            case 'b':
+                if (!parse_u16(optarg, 0xFFU, &parsed_u16)) {
+                    fprintf(stderr, "Invalid payload base byte (0-255): %s\n", optarg);
+                    return false;
+                }
+                options->payload_base = (uint8_t)parsed_u16;
+                break;
+            case 'k':
+                options->kiss_device = optarg;
                 break;
             case 'p':
                 options->send_ping = true;
@@ -261,7 +282,7 @@ static int send_vector_packet(csp_iface_t *can_iface, const struct options *opti
         }
 
         for (uint16_t i = 0; i < options->payload_length; i++) {
-            packet->data[i] = (uint8_t)(PAYLOAD_BASE_BYTE + i);
+            packet->data[i] = (uint8_t)(options->payload_base + i);
         }
         packet->length = options->payload_length;
 
@@ -298,6 +319,8 @@ int main(int argc, char **argv) {
         .csp_opts = CSP_O_NONE,
         .payload_length = DEFAULT_PAYLOAD_LENGTH,
         .packet_count = DEFAULT_PACKET_COUNT,
+        .payload_base = PAYLOAD_BASE_BYTE,
+        .kiss_device = NULL,
         .send_ping = false,
     };
 
@@ -313,25 +336,46 @@ int main(int argc, char **argv) {
     csp_conf.version = 2;
     csp_init();
 
-    /*
-     * Bitrate 0 avoids reconfiguring vcan0, which does not need a physical CAN
-     * bitrate.
-     * Promiscuous mode keeps the helper usable for capture-only vector generation.
-     */
     csp_iface_t *can_iface = NULL;
-    int error = csp_can_socketcan_open_and_add_interface(
-        options.can_interface,
-        CSP_IF_CAN_DEFAULT_NAME,
-        options.source_address,
-        0,
-        true,
-        &can_iface);
-    if (error != CSP_ERR_NONE) {
-        fprintf(stderr,
-                "Failed to open SocketCAN interface %s: libcsp error %d\n",
-                options.can_interface,
-                error);
-        return EXIT_FAILURE;
+    int error;
+    if (options.kiss_device != NULL) {
+        /* KISS over a serial line (a pty in the vector container): whole CSP packets, no CAN. */
+        csp_usart_conf_t usart_conf = {
+            .device = options.kiss_device,
+            .baudrate = KISS_BAUDRATE,
+            .databits = 8,
+            .stopbits = 1,
+            .paritysetting = 0,
+        };
+        error = csp_usart_open_and_add_kiss_interface(
+            &usart_conf, CSP_IF_KISS_DEFAULT_NAME, options.source_address, &can_iface);
+        if (error != CSP_ERR_NONE) {
+            fprintf(stderr,
+                    "Failed to open KISS device %s: libcsp error %d\n",
+                    options.kiss_device,
+                    error);
+            return EXIT_FAILURE;
+        }
+    } else {
+        /*
+         * Bitrate 0 avoids reconfiguring vcan0, which does not need a physical CAN
+         * bitrate.
+         * Promiscuous mode keeps the helper usable for capture-only vector generation.
+         */
+        error = csp_can_socketcan_open_and_add_interface(
+            options.can_interface,
+            CSP_IF_CAN_DEFAULT_NAME,
+            options.source_address,
+            0,
+            true,
+            &can_iface);
+        if (error != CSP_ERR_NONE) {
+            fprintf(stderr,
+                    "Failed to open SocketCAN interface %s: libcsp error %d\n",
+                    options.can_interface,
+                    error);
+            return EXIT_FAILURE;
+        }
     }
 
     can_iface->is_default = 1;

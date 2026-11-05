@@ -70,3 +70,6 @@ generate_frames multi_frame_priority_critical 2 -d 2 -r 0 -l 12
 generate_frames multi_frame_two_packets 4 -d 2 -l 12 -n 2
 
 echo "Regenerated $(ls "${VECTOR_DIR}"/*.txt | wc -l) golden vector captures in ${VECTOR_DIR}."
+
+# The serial (KISS) vectors live in kiss/ and need no vcan0.
+"${VECTOR_DIR}/scripts/regenerate-kiss-vectors.sh"

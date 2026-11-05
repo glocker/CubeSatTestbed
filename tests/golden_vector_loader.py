@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 GOLDEN_VECTOR_DIR = Path(__file__).resolve().parent / "golden_vectors"
+KISS_VECTOR_DIR = GOLDEN_VECTOR_DIR / "kiss"
 PINNED_LIBCSP_REPO = "https://github.com/libcsp/libcsp"
 PINNED_LIBCSP_TAG = "v2.1"
 PINNED_LIBCSP_COMMIT = "48f7fb0"
@@ -270,3 +271,75 @@ def _parse_timestamp(value: str | None) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+KISS_FEND = 0xC0
+KISS_FESC = 0xDB
+KISS_TFEND = 0xDC
+KISS_TFESC = 0xDD
+KISS_TNC_DATA = 0x00
+
+
+@dataclass(frozen=True)
+class KissGoldenVector:
+    """Loaded metadata and wire frames for one KISS golden-vector fixture pair.
+
+    ``frames`` are the exact bytes libcsp wrote to the serial line, ``FEND`` to
+    ``FEND`` inclusive, one entry per KISS frame in capture order.
+    """
+
+    name: str
+    metadata_path: Path
+    capture_path: Path
+    metadata: dict[str, Any]
+    frames: tuple[bytes, ...]
+
+
+def discover_kiss_vector_metadata(
+    vector_dir: Path = KISS_VECTOR_DIR,
+) -> tuple[Path, ...]:
+    """Return committed KISS golden-vector metadata files in deterministic order."""
+
+    return tuple(sorted(vector_dir.glob("*.meta.toml")))
+
+
+def load_kiss_vectors(vector_dir: Path = KISS_VECTOR_DIR) -> tuple[KissGoldenVector, ...]:
+    """Discover and load all committed KISS golden-vector fixture pairs."""
+
+    return tuple(load_kiss_vector(path) for path in discover_kiss_vector_metadata(vector_dir))
+
+
+def load_kiss_vector(metadata_path: Path) -> KissGoldenVector:
+    """Load one KISS ``*.meta.toml`` file and its sibling frame capture."""
+
+    metadata = _load_toml(metadata_path)
+    name = _required_metadata_str(metadata, "name", metadata_path)
+    capture_name = _required_metadata_str(metadata, "capture", metadata_path)
+    capture_path = _sibling_capture_path(metadata_path, capture_name)
+    if not capture_path.is_file():
+        raise GoldenVectorError(
+            f"{metadata_path}: capture file {capture_name!r} does not exist next to metadata"
+        )
+    return KissGoldenVector(
+        name=name,
+        metadata_path=metadata_path,
+        capture_path=capture_path,
+        metadata=metadata,
+        frames=parse_kiss_capture_file(capture_path),
+    )
+
+
+def parse_kiss_capture_file(path: Path) -> tuple[bytes, ...]:
+    """Parse a KISS capture: one line of space-separated hex per wire frame."""
+
+    frames: list[bytes] = []
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not raw_line.strip():
+            continue
+        try:
+            frames.append(parse_payload_hex(raw_line.strip()))
+        except GoldenVectorError as exc:
+            raise GoldenVectorError(f"{path}:{line_number}: {exc}") from exc
+    if not frames:
+        raise GoldenVectorError(f"{path}: no KISS frames found")
+    return tuple(frames)
