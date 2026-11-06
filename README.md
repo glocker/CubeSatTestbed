@@ -296,7 +296,8 @@ sudo ip link set up vcan0
 - Modules: Generic EPS, OBC Peer (rule engine), Simple Payload, RC thermal
   node -- plus your own, registered the same way the built-ins are
   ([`docs/writing-a-module.md`](docs/writing-a-module.md)).
-- Transports: in-memory (CI/tests) and SocketCAN (Linux HIL).
+- Transports: in-memory (CI/tests), SocketCAN (Linux HIL) and serial KISS
+  (UART, USB-serial or a pty).
 - Deterministic virtual-time engine, TOML setup + YAML scenarios, PASS/FAIL
   CLI report with CI-friendly exit codes, JUnit XML output and a decoded
   wire-level frame trace (`--trace`).

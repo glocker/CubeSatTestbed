@@ -13,7 +13,12 @@ from pathlib import Path
 from typing import cast
 
 from cubesat_testbed.clock import Clock, RealTimeClock
-from cubesat_testbed.config import SocketCanTransportConfig, TestbedConfig, load_testbed_config
+from cubesat_testbed.config import (
+    KissTransportConfig,
+    SocketCanTransportConfig,
+    TestbedConfig,
+    load_testbed_config,
+)
 from cubesat_testbed.examples import (
     DEFAULT_EXAMPLE_NAME,
     SCENARIO_FILENAME,
@@ -328,7 +333,7 @@ def _example_run_command(example: Example, directory: Path) -> str:
 
 
 def _warn_on_unpaced_socketcan(setup: TestbedConfig, *, realtime: bool) -> None:
-    """Warn when a real bus is configured but virtual time is not paced against it.
+    """Warn when a real bus or line is configured but virtual time is not paced against it.
 
     Without ``--realtime`` the run uses the default ``VirtualClock``, which jumps
     straight to the next scheduled virtual instant and so never gives a real
@@ -338,14 +343,22 @@ def _warn_on_unpaced_socketcan(setup: TestbedConfig, *, realtime: bool) -> None:
     does a run deliberately kept fast while a peer is not connected yet.
     """
 
-    if realtime or not isinstance(setup.transport, SocketCanTransportConfig):
+    if realtime:
         return
-    print(
-        f"warning: transport.type='socketcan' (interface {setup.transport.interface!r}) "
-        "without --realtime; virtual time is not paced against wall-clock time, so a "
-        "real peer gets no time to respond",
-        file=sys.stderr,
-    )
+    if isinstance(setup.transport, SocketCanTransportConfig):
+        print(
+            f"warning: transport.type='socketcan' (interface {setup.transport.interface!r}) "
+            "without --realtime; virtual time is not paced against wall-clock time, so a "
+            "real peer gets no time to respond",
+            file=sys.stderr,
+        )
+    elif isinstance(setup.transport, KissTransportConfig):
+        print(
+            f"warning: transport.type='kiss' (device {setup.transport.device!r}) "
+            "without --realtime; virtual time is not paced against wall-clock time, so a "
+            "real peer gets no time to respond",
+            file=sys.stderr,
+        )
 
 
 def _write_junit_error_xml(path: Path, message: str, *, kind: str, started: float) -> None:

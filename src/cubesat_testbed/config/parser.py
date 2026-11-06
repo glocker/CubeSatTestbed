@@ -160,8 +160,24 @@ class SocketCanTransportConfig(BaseModel):
         return _validate_identifier("SocketCAN interface", value)
 
 
+class KissTransportConfig(BaseModel):
+    """CSP v2 over a serial line with KISS framing.
+
+    ``device`` is a tty such as ``/dev/ttyUSB0`` or the path of a pty (CI, or a
+    libcsp process on the same machine). The line joins two ends: packets for the
+    nodes the testbed simulates stay inside it, packets for any other address go out
+    on the line, and everything arriving on the line is delivered.
+    """
+
+    model_config = _SCHEMA_MODEL_CONFIG
+
+    type: Literal["kiss"]
+    device: str = Field(min_length=1)
+    baudrate: int = Field(default=115200, ge=1)
+
+
 TransportConfig: TypeAlias = Annotated[
-    InMemoryTransportConfig | SocketCanTransportConfig,
+    InMemoryTransportConfig | SocketCanTransportConfig | KissTransportConfig,
     Field(discriminator="type"),
 ]
 

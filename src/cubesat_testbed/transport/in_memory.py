@@ -18,9 +18,9 @@ import time
 from collections import deque
 from collections.abc import Iterable
 
-from cubesat_testbed.protocol.csp_v2 import CspCanFrame
 from cubesat_testbed.transport.base import (
     EndpointId,
+    Frame,
     TransportAdapter,
     TransportEndpointError,
     TransportEnvelope,
@@ -81,11 +81,11 @@ class InMemoryBusAdapter(TransportAdapter):
 
     def send(
         self,
-        frame: CspCanFrame,
+        frame: Frame,
         *,
         source: EndpointId | None = None,
     ) -> TransportEnvelope:
-        """Synchronously broadcast one CSP-over-CAN frame to receive queues."""
+        """Synchronously broadcast one frame (CAN or whole packet) to receive queues."""
 
         if source is not None:
             source = _validate_endpoint(source)
