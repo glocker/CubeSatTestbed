@@ -16,8 +16,10 @@ from typing import Protocol, Self, cast
 import can
 
 from cubesat_testbed.protocol.csp_v2 import CspCanFrame, CspV2CodecError
+from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame
 from cubesat_testbed.transport.base import (
     EndpointId,
+    Frame,
     TransportAdapter,
     TransportEndpointError,
     TransportEnvelope,
@@ -86,13 +88,15 @@ class SocketCanAdapter(TransportAdapter):
 
     def send(
         self,
-        frame: CspCanFrame,
+        frame: Frame,
         *,
         source: EndpointId | None = None,
     ) -> TransportEnvelope:
         """Send one extended classic CAN frame through SocketCAN."""
 
         self._ensure_open()
+        if isinstance(frame, CspPacketFrame):
+            raise TransportError("SocketCAN carries CAN frames, not whole CSP packets")
         validated_source = None if source is None else _validate_endpoint(source)
         if not frame.is_extended_id:
             raise TransportError("SocketCAN CSP v2 path requires extended 29-bit CAN identifiers")

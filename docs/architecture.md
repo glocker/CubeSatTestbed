@@ -21,6 +21,10 @@ src/cubesat_testbed/
   transport/factory.py    # Config-to-adapter construction
   transport/in_memory.py  # CI/local in-memory bus
   transport/socketcan.py  # Linux SocketCAN adapter
+  transport/kiss.py       # serial KISS adapter (whole CSP packets, local delivery)
+  transport/serial_line.py # termios serial line (tty or pty), standard library only
+  protocol/csp_v2_packet.py # whole-packet frame and 6-byte header shared by KISS (and ZMQ)
+  protocol/csp_v2_kiss.py # KISS framing, CRC-32C and the receive state machine
   modules/base.py         # Module/FSM contract
   modules/registry.py     # module_type registry: factories, params, build order
   modules/eps.py          # Generic EPS model
@@ -50,8 +54,13 @@ src/cubesat_testbed/
 
 3. **Protocol and transport adapters**
    - Protocol: v1 ships CSP v2 only.
-   - Transport: v1 ships `InMemoryBusAdapter` and `SocketCanAdapter`, built
-     from setup config by `transport.factory.build_transport_adapter`.
+   - Transport: v1 ships `InMemoryBusAdapter`, `SocketCanAdapter` and
+     `KissAdapter`, built from setup config by
+     `transport.factory.build_transport_adapter`. What crosses the boundary is a
+     `Frame`: a CAN frame (a packet may span several) or a whole-packet frame
+     (KISS). How a packet becomes frames is asked of the adapter
+     (`new_sender`), so the runner and OBC Peer do not know which link they are on.
+     The CAN and whole-packet code paths share nothing but the CSP header fields.
    - `receive(timeout=...)` lets a caller block up to `timeout` real seconds
      for a frame, returning as soon as one arrives rather than only once the
      full timeout elapses; the in-memory adapter has no producer to wait for,

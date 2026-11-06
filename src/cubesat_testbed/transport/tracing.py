@@ -26,6 +26,13 @@ an in-memory frame is traced once in each direction; whether a node *accepted*
 the packet, or dropped it as too large, lost or late, is the runner's business
 and is reported as ``DROP`` lines.
 
+A packet carried whole (serial KISS) is one line: ``link=serial`` with the exact
+KISS frame as ``data`` when it went over the line, or ``link=local`` with
+``data=-`` when it was delivered between two simulated nodes, then the header
+fields, the ``payload`` and the same annotation a CAN packet gets. Frames the
+serial link itself rejects (bad CRC32, oversized) are reported as ``DROP`` lines
+by the runner, like a lost CAN fragment.
+
 Tracing is observability only. It never alters delivery, ordering or virtual
 time, and it never raises: a frame the codec cannot decode is reported as such,
 because unexpected traffic is often the reason a trace was turned on.
@@ -41,14 +48,21 @@ from cubesat_testbed.protocol.csp_v2 import (
     CspCanIdFields,
     CspReassembler,
     CspV2CodecError,
-    DecodedCspPacket,
     decode_can_id,
     decode_first_frame_header,
 )
 from cubesat_testbed.protocol.csp_v2 import decode_frame as _decode_frame
-from cubesat_testbed.transport.base import EndpointId, TransportAdapter, TransportEnvelope
+from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame, CspPacketView
+from cubesat_testbed.transport.base import (
+    EndpointId,
+    Frame,
+    PacketSender,
+    TransportAdapter,
+    TransportDrop,
+    TransportEnvelope,
+)
 
-FrameAnnotator = Callable[[DecodedCspPacket], str | None]
+FrameAnnotator = Callable[[CspPacketView], str | None]
 """Describe a decoded frame in terms of the configured route it matches.
 
 Returns a trailing annotation for the trace line (for example
@@ -96,7 +110,7 @@ class TracingTransportAdapter(TransportAdapter):
 
     def send(
         self,
-        frame: CspCanFrame,
+        frame: Frame,
         *,
         source: EndpointId | None = None,
     ) -> TransportEnvelope:
@@ -123,6 +137,16 @@ class TracingTransportAdapter(TransportAdapter):
         if envelope is not None:
             self._trace("RX", envelope)
         return envelope
+
+    def new_sender(self, *, max_packet_bytes: int = 256) -> PacketSender:
+        """Ask the wrapped adapter: how a packet becomes frames depends on the link."""
+
+        return self._inner.new_sender(max_packet_bytes=max_packet_bytes)
+
+    def take_drops(self) -> tuple[TransportDrop, ...]:
+        """Forward what the wrapped adapter discarded."""
+
+        return self._inner.take_drops()
 
     def close(self) -> None:
         """Close the wrapped adapter; the trace stream is not owned here."""
@@ -172,6 +196,8 @@ def format_trace_line(
     if now is not None:
         parts.append(f"t={now}")
     parts.append(direction)
+    if isinstance(frame, CspPacketFrame):
+        return _format_packet_line(parts, frame, annotate=annotate)
     parts.append(f"can_id=0x{frame.can_id:08X}")
     parts.append(f"dlc={frame.dlc}")
 
@@ -203,6 +229,34 @@ def format_trace_line(
     )
 
     annotation = None if annotate is None else annotate(packet)
+    if annotation:
+        parts.append(annotation)
+    return " ".join(parts)
+
+
+def _format_packet_line(
+    parts: list[str],
+    frame: CspPacketFrame,
+    *,
+    annotate: FrameAnnotator | None,
+) -> str:
+    """Describe a packet that a link carries whole; see the module docstring."""
+
+    fields = frame.fields
+    parts.append("link=serial" if frame.wire else "link=local")
+    parts.extend(
+        (
+            f"pri={fields.priority}",
+            f"src={fields.source}",
+            f"dst={fields.destination}",
+            f"dport={fields.destination_port}",
+            f"sport={fields.source_port}",
+            f"flags=0x{fields.flags:02X}",
+            f"data={_hex(frame.wire)}",
+            f"payload={_hex(frame.payload)}",
+        )
+    )
+    annotation = None if annotate is None else annotate(frame)
     if annotation:
         parts.append(annotation)
     return " ".join(parts)

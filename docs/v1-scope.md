@@ -22,6 +22,9 @@ official libcsp `v2.1` at commit `48f7fb0` — see
 [`tests/golden_vectors/README.md`](../tests/golden_vectors/README.md) for the
 generation workflow and fixture contract.
 
+CSP v2 also runs over a **serial KISS line**, as a separate code path from CAN —
+see [Serial KISS transport](#serial-kiss-transport).
+
 Planned later, not implemented in v1:
 
 - CSP v1 for legacy hardware;
@@ -247,6 +250,54 @@ the same result on every run.
 Still out of scope: CSP v1, other physical layers (KISS, ZMQ), RDP, and a
 packet carrying several telemetry signals (each signal is still its own packet).
 
+## Serial KISS transport
+
+`transport.type = "kiss"` carries CSP v2 over a UART, a USB-serial adapter or a pty,
+with the framing libcsp `v2.1` uses (fixed by the golden vectors in
+`tests/golden_vectors/kiss/`):
+
+```toml
+[transport]
+type = "kiss"
+device = "/dev/ttyUSB0"   # a tty, or the path of a pty
+baudrate = 115200         # default; standard rates only
+```
+
+- **Frame.** `FEND 0x00 <packet> FEND`, with `0xC0` sent as `DB DC` and `0xDB` as
+  `DB DD` inside. The packet is the 6-byte CSP v2 header (full 14-bit addresses),
+  the payload and a 4-byte CRC32.
+- **CRC32.** libcsp's KISS interface appends it to *every* frame, whether or not
+  `CSP_FLAG_CRC32` is set. A packet with that flag therefore carries two trailers:
+  its own, inside the payload, and the interface's after it. The CRC is CRC-32C
+  (Castagnoli), over the payload only, big-endian; a receiver also accepts it over
+  header plus payload, as libcsp does.
+- **No fragmentation.** A frame carries one whole packet; the CFP2 rules above are
+  CAN-only. The size limit is still the node's `max_packet_bytes`.
+- **A line has two ends.** A packet addressed to a node the testbed simulates is
+  delivered inside it and never reaches the line; a packet for any other address
+  (`software`/`hardware` nodes) goes out as a KISS frame, and every frame arriving
+  on the line is delivered like a bus frame. Like SocketCAN, a frame sent is not
+  echoed back.
+- **Frames the link rejects are reported, never swallowed.** A frame with a bad
+  CRC32 (`crc_error`), too short for a header and CRC (`too_short`), longer than the
+  receive buffer (`overflow`) or carrying an unsupported header (`malformed`)
+  appears as a `DROP` line, in `--json` and in `--trace`, exactly like a CAN packet
+  lost to reassembly; a packet too long for the *receiving node's*
+  `max_packet_bytes` is dropped as `overflow` too.
+- **Trace.** A packet is one line: `link=serial` with the exact KISS frame as
+  `data`, or `link=local` and `data=-` when it never left the testbed, then the
+  header fields, `payload` and the usual route annotation.
+- **Pacing.** Run with `--realtime`, as for SocketCAN, so a real peer gets
+  wall-clock time to answer; without it the CLI warns.
+
+The serial line is opened with `termios` from the standard library, so no extra
+dependency is needed (Linux only, like SocketCAN). `libcsp` itself can be pointed at
+the same line, or at the other end of a pty pair, with
+`csp_usart_open_and_add_kiss_interface`.
+
+Out of scope: KISS over anything but a byte stream, non-standard baud rates, and
+hardware flow control.
+
 ## Telemetry wire encoding
 
 Every configured telemetry signal requires a byte-aligned wire layout
@@ -347,7 +398,8 @@ builds a runtime from either transport type, giving a locally simulated
 module only to `simulated` nodes. A `software`/`hardware` node is never
 simulated: it is reached and observed purely as CSP-over-CAN traffic on the
 transport, whether that traffic comes from a real board, a real process on
-`vcan0`, or a scenario test manually placing frames on the in-memory bus.
+`vcan0` or on the other end of a serial line, or a scenario test manually placing
+frames on the in-memory bus.
 
 By default, `wait()` uses `cubesat_testbed.clock.VirtualClock` and jumps
 straight to its target virtual time, exactly as before. Passing

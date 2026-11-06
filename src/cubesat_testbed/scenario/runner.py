@@ -53,12 +53,11 @@ from cubesat_testbed.modules import (
 from cubesat_testbed.protocol.csp_v2 import (
     CSP_V2_DEFAULT_MAX_PACKET_BYTES,
     CspFields,
-    CspFragmenter,
     CspReassembler,
-    DecodedCspPacket,
     ReassemblyEvent,
     decode_can_id,
 )
+from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame, CspPacketView
 from cubesat_testbed.protocol.telemetry_codec import (
     TelemetryCodecError,
     decode_telemetry_value,
@@ -72,6 +71,7 @@ from cubesat_testbed.scenario.assertions import (
 from cubesat_testbed.transport import (
     EndpointId,
     FrameAnnotator,
+    PacketSender,
     TracingTransportAdapter,
     TransportAdapter,
     TransportEnvelope,
@@ -328,7 +328,7 @@ class ScenarioRunner:
             node.address: node.max_packet_bytes for node in runtime.setup.nodes.values()
         }
         self._reassemblers: dict[int, CspReassembler] = {}
-        self._fragmenters: dict[int, CspFragmenter] = {}
+        self._senders: dict[int, PacketSender] = {}
         self._dropped_packets: list[DroppedPacket] = []
         self.runtime.engine.add_handler(EventKind.TELEMETRY, self._record_telemetry)
         self._arm_physical_step()
@@ -359,6 +359,7 @@ class ScenarioRunner:
                 raise ScenarioRuntimeError(f"unsupported scenario step at index {index}: {step!r}")
 
         self._run_current_events()
+        self._collect_transport_drops()
         self._expire_partial_packets()
         return ScenarioRunResult(
             scenario_name=scenario.name,
@@ -420,6 +421,7 @@ class ScenarioRunner:
             next_stop = target if next_event_time is None else min(next_event_time, target)
             remaining = self.runtime.clock.seconds_until(next_stop)
             envelope = self.runtime.transport.receive(timeout=remaining)
+            self._collect_transport_drops()
             if envelope is not None:
                 self._deliver_transport_envelope(envelope)
                 continue
@@ -619,24 +621,26 @@ class ScenarioRunner:
         )
 
     def _send_packet(self, fields: CspFields, payload: bytes) -> TransportEnvelope:
-        """Send one CSP packet as however many CAN frames it needs.
+        """Send one CSP packet as however many frames the link needs for it.
 
-        Returns the envelope of the last frame, the one that completes the
-        packet at the receiver.
+        How a packet becomes frames is the transport's business: several CFP2
+        frames on CAN, one whole-packet frame on a serial line. Returns the
+        envelope of the last frame, the one that completes the packet at the
+        receiver.
         """
 
-        fragmenter = self._fragmenters.get(fields.source)
-        if fragmenter is None:
-            fragmenter = CspFragmenter(
+        sender = self._senders.get(fields.source)
+        if sender is None:
+            sender = self.runtime.transport.new_sender(
                 max_packet_bytes=self._limits_by_address.get(
                     fields.source, CSP_V2_DEFAULT_MAX_PACKET_BYTES
                 )
             )
-            self._fragmenters[fields.source] = fragmenter
+            self._senders[fields.source] = sender
         envelope: TransportEnvelope | None = None
-        for frame in fragmenter.fragment(fields, payload):
+        for frame in sender.frames(fields, payload):
             envelope = self.runtime.transport.send(frame, source=fields.source)
-        assert envelope is not None  # fragment() always yields at least one frame
+        assert envelope is not None  # a packet always yields at least one frame
         return envelope
 
     def _drain_transport_frames(self) -> bool:
@@ -646,6 +650,7 @@ class ScenarioRunner:
         for envelope in self.runtime.transport.drain():
             self._deliver_transport_envelope(envelope)
             delivered_any = True
+        self._collect_transport_drops()
         return delivered_any
 
     def _deliver_transport_envelope(self, envelope: TransportEnvelope) -> None:
@@ -657,6 +662,9 @@ class ScenarioRunner:
         """
 
         frame = envelope.frame
+        if isinstance(frame, CspPacketFrame):
+            self._deliver_whole_packet(frame, envelope)
+            return
         destination = decode_can_id(frame.can_id).destination if frame.is_extended_id else None
         events = self._reassembler_for(destination).feed(frame, now=self.runtime.engine.now)
         for event in events:
@@ -664,6 +672,41 @@ class ScenarioRunner:
                 self._record_drop(event, destination)
             elif event.kind == "complete" and event.packet is not None:
                 self._route_packet(event.packet, envelope)
+
+    def _deliver_whole_packet(self, packet: CspPacketFrame, envelope: TransportEnvelope) -> None:
+        """Route a packet a link delivered whole, if it fits the receiving node."""
+
+        destination = packet.fields.destination
+        limit = self._limits_by_address.get(destination, CSP_V2_DEFAULT_MAX_PACKET_BYTES)
+        if len(packet.payload) > limit:
+            self._append_drop(
+                DroppedPacket(
+                    time=self.runtime.engine.now,
+                    destination=destination,
+                    sender=packet.fields.source,
+                    reason="overflow",
+                    detail=f"payload of {len(packet.payload)} bytes is over "
+                    f"max_packet_bytes={limit}",
+                    limit=limit,
+                )
+            )
+            return
+        self._route_packet(packet, envelope)
+
+    def _collect_transport_drops(self) -> None:
+        """Record what the transport itself rejected (a serial link's bad frames)."""
+
+        for drop in self.runtime.transport.take_drops():
+            self._append_drop(
+                DroppedPacket(
+                    time=self.runtime.engine.now,
+                    destination=drop.destination,
+                    sender=drop.source,
+                    reason=drop.reason,
+                    detail=drop.detail,
+                    limit=drop.limit,
+                )
+            )
 
     def _reassembler_for(self, destination: int | None) -> CspReassembler:
         key = -1 if destination is None else destination
@@ -685,20 +728,24 @@ class ScenarioRunner:
 
     def _record_drop(self, event: ReassemblyEvent, destination: int | None) -> None:
         reason = "" if event.reason is None else event.reason.value
-        dropped = DroppedPacket(
-            time=event.time,
-            destination=destination if destination is not None else event.destination,
-            sender=event.sender,
-            reason=reason,
-            detail=event.detail,
-            limit=event.limit,
+        self._append_drop(
+            DroppedPacket(
+                time=event.time,
+                destination=destination if destination is not None else event.destination,
+                sender=event.sender,
+                reason=reason,
+                detail=event.detail,
+                limit=event.limit,
+            )
         )
+
+    def _append_drop(self, dropped: DroppedPacket) -> None:
         self._dropped_packets.append(dropped)
         if self.runtime.trace is not None:
             self.runtime.trace.write(format_drop_trace_line(dropped) + "\n")
             self.runtime.trace.flush()
 
-    def _route_packet(self, packet: DecodedCspPacket, envelope: TransportEnvelope) -> None:
+    def _route_packet(self, packet: CspPacketView, envelope: TransportEnvelope) -> None:
         command_route = self._command_route_for_packet(packet)
         if command_route is not None:
             self._deliver_command(command_route, packet, envelope)
@@ -721,7 +768,7 @@ class ScenarioRunner:
     def _deliver_command(
         self,
         route: _CommandRoute,
-        packet: DecodedCspPacket,
+        packet: CspPacketView,
         envelope: TransportEnvelope,
     ) -> None:
         module = self.runtime.module(route.target_node)
@@ -745,7 +792,7 @@ class ScenarioRunner:
                 f"command {route.source_node}.{route.command} was not handled by {route.target_node}"
             )
 
-    def _deliver_telemetry(self, route: _TelemetryRoute, packet: DecodedCspPacket) -> None:
+    def _deliver_telemetry(self, route: _TelemetryRoute, packet: CspPacketView) -> None:
         value = decode_telemetry_value(route.field_name, route.mapping, packet.payload)
         self.runtime.engine.schedule_telemetry(route.signal, value, source=route.node_name)
 
@@ -771,7 +818,7 @@ class ScenarioRunner:
             )
         return candidates[0]
 
-    def _command_route_for_packet(self, packet: DecodedCspPacket) -> _CommandRoute | None:
+    def _command_route_for_packet(self, packet: CspPacketView) -> _CommandRoute | None:
         """Resolve the configured command route for an inbound CSP frame, if any.
 
         Returns ``None`` rather than raising when nothing matches: the caller
@@ -798,7 +845,7 @@ class ScenarioRunner:
             return None
         raise ScenarioRuntimeError("received CSP command frame matches multiple configured routes")
 
-    def _telemetry_route_for_packet(self, packet: DecodedCspPacket) -> _TelemetryRoute | None:
+    def _telemetry_route_for_packet(self, packet: CspPacketView) -> _TelemetryRoute | None:
         """Resolve the configured telemetry route for an inbound CSP frame, if any."""
 
         fields = packet.fields
@@ -874,8 +921,14 @@ def build_runtime(
     fault_engine = FaultInjectionEngine(engine)
     command_routes = _build_command_routes(setup)
     telemetry_routes = _build_telemetry_routes(setup)
+    participants = resolve_participants(setup)
     transport = build_transport_adapter(
-        setup.transport, endpoints=(node.address for node in setup.nodes.values())
+        setup.transport,
+        endpoints=(node.address for node in setup.nodes.values()),
+        local_addresses=(
+            participant.address for participant in participants.values() if participant.is_simulated
+        ),
+        max_packet_bytes=max(node.max_packet_bytes for node in setup.nodes.values()),
     )
     if trace is not None:
         # Wrapping here, rather than tracing inside the runner, is what makes
@@ -886,7 +939,6 @@ def build_runtime(
             now=lambda: engine.now,
             annotate=_build_frame_annotator(command_routes, telemetry_routes),
         )
-    participants = resolve_participants(setup)
 
     # Both the construction order and the per-tick order come from the module
     # registry, so a module type this package has never heard of takes part in
@@ -1042,7 +1094,7 @@ def _build_frame_annotator(
     so it has to be able to report the unexpected rather than fail on it.
     """
 
-    def annotate(packet: DecodedCspPacket) -> str | None:
+    def annotate(packet: CspPacketView) -> str | None:
         fields = packet.fields
         commands = [
             route

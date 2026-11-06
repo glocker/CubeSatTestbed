@@ -26,6 +26,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - `csp_client -n` (back-to-back packets) and payloads up to 200 bytes, for
   generating multi-frame vectors.
 
+- Serial KISS transport (`transport.type = "kiss"`): CSP v2 over a UART,
+  USB-serial adapter or pty, framed as libcsp `v2.1` frames it. Layout, escaping
+  and the CRC32 (CRC-32C over the payload, appended to every frame whether or not
+  `CSP_FLAG_CRC32` is set) are fixed by fourteen KISS golden vectors captured from
+  libcsp. Packets for simulated nodes are delivered inside the testbed; packets for
+  `software`/`hardware` nodes go out on the line. Frames the line rejects (bad
+  CRC32, too short, oversized) are reported as dropped packets. The serial port is
+  opened with the standard library's `termios`; no new dependency. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#serial-kiss-transport).
+- `--trace` shows a whole-packet frame as one line (`link=serial|local`).
+- `run` warns on stderr, as for SocketCAN, when a `kiss` transport is used without
+  `--realtime`.
+- `TransportAdapter.new_sender()` and `take_drops()`: how a packet becomes frames, and
+  what a link discarded, are now the transport's business, so the runner and OBC
+  Peer work unchanged over CAN and serial.
+
 ### Changed
 
 - A command `payload_hex` or telemetry layout longer than 4 bytes is accepted;

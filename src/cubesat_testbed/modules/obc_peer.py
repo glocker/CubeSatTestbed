@@ -41,13 +41,17 @@ from cubesat_testbed.modules.base import (
 )
 from cubesat_testbed.protocol.csp_v2 import (
     CSP_V2_DEFAULT_MAX_PACKET_BYTES,
-    CspCanFrame,
     CspFields,
-    CspFragmenter,
     CspV2CodecError,
     fragment_packet,
 )
-from cubesat_testbed.transport.base import EndpointId, TransportAdapter, TransportEnvelope
+from cubesat_testbed.transport.base import (
+    EndpointId,
+    Frame,
+    PacketSender,
+    TransportAdapter,
+    TransportEnvelope,
+)
 
 if TYPE_CHECKING:
     from cubesat_testbed.config import (
@@ -219,13 +223,14 @@ class ObcPeerNamedCommand:
         object.__setattr__(self, "payload", payload)
         self.encode()
 
-    def encode(self, *, fragmenter: CspFragmenter | None = None) -> tuple[CspCanFrame, ...]:
-        """Encode this named command into the CSP-over-CAN frames that carry it.
+    def encode(self, *, sender: PacketSender | None = None) -> tuple[Frame, ...]:
+        """Encode this named command into the frames that carry it on the link.
 
-        One frame when the payload fits (4 bytes or fewer), several CFP2 frames
-        otherwise. Pass the sending node's ``fragmenter`` so consecutive
-        commands advance its CFP2 packet counter and respect its packet size
-        limit; without one the packet counter is 0.
+        On CAN that is one frame when the payload fits (4 bytes or fewer) and
+        several CFP2 frames otherwise; on a serial line, one whole-packet frame.
+        Pass the sending node's ``sender`` (from the transport) so consecutive
+        commands advance its per-link state and respect its packet size limit;
+        without one, CAN framing with packet counter 0 is used.
         """
 
         fields = _validated_csp_fields(
@@ -237,8 +242,8 @@ class ObcPeerNamedCommand:
             flags=self.flags,
         )
         try:
-            if fragmenter is not None:
-                return fragmenter.fragment(fields, self.payload)
+            if sender is not None:
+                return sender.frames(fields, bytes(self.payload))
             return fragment_packet(fields, self.payload)
         except CspV2CodecError as exc:
             raise ModuleError(f"named command cannot be encoded as CSP frames: {exc}") from exc
@@ -326,7 +331,7 @@ class ObcPeerModule(SimulatedModule):
     ) -> None:
         self.config = ObcPeerConfig() if config is None else config
         self._transport = transport
-        self._fragmenter = CspFragmenter(max_packet_bytes=self.config.max_packet_bytes)
+        self._sender: PacketSender | None = None
         self._engine: DiscreteEventEngine | None = None
         self._event_handler: EventHandler = self.handle_event
         self._runtime_by_rule: dict[str, _RuleRuntimeState] = {
@@ -390,6 +395,7 @@ class ObcPeerModule(SimulatedModule):
         """Replace the transport adapter used for command emission."""
 
         self._transport = transport
+        self._sender = None
 
     def attach(self, engine: DiscreteEventEngine) -> None:
         """Register this OBC Peer as a handler for DES ``TELEMETRY`` events."""
@@ -516,7 +522,11 @@ class ObcPeerModule(SimulatedModule):
         except KeyError as exc:
             raise ModuleError(f"OBC Peer command {action.command!r} is not configured") from exc
 
-        frames = command.encode(fragmenter=self._fragmenter)
+        if self._sender is None:
+            # Created on first use, once a transport is known: how a packet
+            # becomes frames depends on the link, and the transport can change.
+            self._sender = self._transport.new_sender(max_packet_bytes=self.config.max_packet_bytes)
+        frames = command.encode(sender=self._sender)
         return tuple(self._transport.send(frame, source=self.default_source) for frame in frames)
 
     def _apply_fault(self, action: ObcPeerFaultAction, *, now: VirtualTime) -> FaultActionResult:
