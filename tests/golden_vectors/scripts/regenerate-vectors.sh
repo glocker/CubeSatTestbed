@@ -73,3 +73,6 @@ echo "Regenerated $(ls "${VECTOR_DIR}"/*.txt | wc -l) golden vector captures in 
 
 # The serial (KISS) vectors live in kiss/ and need no vcan0.
 "${VECTOR_DIR}/scripts/regenerate-kiss-vectors.sh"
+
+# The ZeroMQ vectors live in zmq/ and need no vcan0 either.
+"${VECTOR_DIR}/scripts/regenerate-zmq-vectors.sh"

@@ -12,6 +12,10 @@ APP_GID="$(stat -c '%g' /app 2>/dev/null || echo 0)"
 
 mkdir -p "$(dirname "${HELPER_TARGET}")"
 install -m 0755 -o "${APP_UID}" -g "${APP_GID}" "${HELPER_SOURCE}" "${HELPER_TARGET}"
+for helper in zmq_capture zmqproxy; do
+    install -m 0755 -o "${APP_UID}" -g "${APP_GID}" \
+        "/opt/cubesat_testbed/bin/${helper}" "/app/tests/golden_vectors/bin/${helper}"
+done
 
 if ! ip link show "${CAN_INTERFACE}" >/dev/null 2>&1; then
     # vcan may already be available from the host kernel; modprobe failures are
