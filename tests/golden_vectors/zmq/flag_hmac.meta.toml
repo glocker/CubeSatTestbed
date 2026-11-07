@@ -1,0 +1,15 @@
+name = "flag_hmac"
+capture = "flag_hmac.txt"
+libcsp_repo = "https://github.com/libcsp/libcsp"
+libcsp_tag = "v2.1"
+libcsp_commit = "48f7fb0"
+command = "zmqproxy & zmq_capture tcp://127.0.0.1:7000 1 15 /app/tests/golden_vectors/zmq/flag_hmac.txt & /app/tests/golden_vectors/bin/csp_client -z 127.0.0.1 -p -d 2 -o hmac -l 4"
+capture_command = "regenerate-zmq-vectors.sh runs libcsp's zmqproxy hub, subscribes zmq_capture to its publish port (7000) and sends with csp_client -z through the subscribe port (6000)"
+interface = "zmq"
+meaning = "CSP_FLAG_HMAC set: libcsp appends a 4-byte HMAC trailer to the payload; nothing else is added."
+protocol = "CSP v2 over ZeroMQ (libcsp zmqhub), one CSP packet per message"
+source_address = 1
+destination_address = 2
+expected_message_count = 1
+expected_messages_hex = ["80 02 00 04 14 88 55 56 57 58 52 8C 9E 11"]
+expected_payloads_hex = ["55 56 57 58 52 8C 9E 11"]

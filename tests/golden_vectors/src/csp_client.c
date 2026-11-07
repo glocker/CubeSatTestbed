@@ -3,6 +3,7 @@
 #include <csp/csp_rtable.h>
 #include <csp/drivers/can_socketcan.h>
 #include <csp/drivers/usart.h>
+#include <csp/interfaces/csp_if_zmqhub.h>
 
 #include <errno.h>
 #include <stdbool.h>
@@ -30,6 +31,8 @@
 #define MAX_PACKET_COUNT 8U
 #define PAYLOAD_BASE_BYTE 0x55U
 #define KISS_BAUDRATE 115200U
+/* Time for ZeroMQ PUB/SUB subscriptions to propagate before sending, and for the message to leave before exit. */
+#define ZMQ_SETTLE_US 1000000U
 
 /** Runtime options parsed from the vector helper command line. */
 struct options {
@@ -42,6 +45,7 @@ struct options {
     uint16_t packet_count;
     uint8_t payload_base;
     const char *kiss_device;
+    const char *zmq_host;
     bool send_ping;
 };
 
@@ -55,7 +59,7 @@ static void print_usage(FILE *stream, const char *program) {
     fprintf(stream,
             "Usage: %s -p [-c can-interface] [-a source-address] [-d destination-address]\n"
             "          [-r priority] [-l payload-length] [-o flag[,flag...]] [-n packets]\n"
-            "          [-b base-byte] [-k kiss-device]\n"
+            "          [-b base-byte] [-k kiss-device] [-z zmq-host]\n"
             "\n"
             "Generate libcsp CSP v2 SocketCAN traffic for repository golden vectors.\n"
             "\n"
@@ -78,6 +82,8 @@ static void print_usage(FILE *stream, const char *program) {
             "                          so e.g. 0xc0 puts KISS FEND/FESC bytes on the wire\n"
             "  -k <kiss-device>        send over a KISS serial interface on this tty/pty instead of\n"
             "                          SocketCAN; -c is then ignored (%u baud)\n"
+            "  -z <zmq-host>           send through a libcsp ZeroMQ hub (zmqproxy) on this host\n"
+            "                          (default ports 6000/7000) instead of SocketCAN\n"
             "  -h                      show this help\n",
             program,
             DEFAULT_CAN_INTERFACE,
@@ -169,7 +175,7 @@ static bool parse_csp_opts(const char *value, uint32_t *result) {
 static bool parse_args(int argc, char **argv, struct options *options) {
     int opt;
     uint16_t parsed_u16;
-    while ((opt = getopt(argc, argv, "c:a:d:r:l:o:n:b:k:ph")) != -1) {
+    while ((opt = getopt(argc, argv, "c:a:d:r:l:o:n:b:k:z:ph")) != -1) {
         switch (opt) {
             case 'c':
                 options->can_interface = optarg;
@@ -221,6 +227,9 @@ static bool parse_args(int argc, char **argv, struct options *options) {
                 break;
             case 'k':
                 options->kiss_device = optarg;
+                break;
+            case 'z':
+                options->zmq_host = optarg;
                 break;
             case 'p':
                 options->send_ping = true;
@@ -321,6 +330,7 @@ int main(int argc, char **argv) {
         .packet_count = DEFAULT_PACKET_COUNT,
         .payload_base = PAYLOAD_BASE_BYTE,
         .kiss_device = NULL,
+        .zmq_host = NULL,
         .send_ping = false,
     };
 
@@ -356,6 +366,18 @@ int main(int argc, char **argv) {
                     error);
             return EXIT_FAILURE;
         }
+    } else if (options.zmq_host != NULL) {
+        /* ZeroMQ hub: whole CSP packets as messages, no CAN and no CRC32. */
+        error = csp_zmqhub_init(options.source_address, options.zmq_host, 0, &can_iface);
+        if (error != CSP_ERR_NONE) {
+            fprintf(stderr,
+                    "Failed to connect to ZMQ hub %s: libcsp error %d\n",
+                    options.zmq_host,
+                    error);
+            return EXIT_FAILURE;
+        }
+        /* A PUB socket drops what it sends before its connection and the hub's subscription exist. */
+        usleep(ZMQ_SETTLE_US);
     } else {
         /*
          * Bitrate 0 avoids reconfiguring vcan0, which does not need a physical CAN
@@ -390,7 +412,11 @@ int main(int argc, char **argv) {
 #endif
 
     if (options.send_ping) {
-        return send_vector_packet(can_iface, &options);
+        int result = send_vector_packet(can_iface, &options);
+        if (options.zmq_host != NULL) {
+            usleep(ZMQ_SETTLE_US);
+        }
+        return result;
     }
 
     return EXIT_SUCCESS;

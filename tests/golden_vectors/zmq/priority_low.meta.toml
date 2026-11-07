@@ -1,0 +1,15 @@
+name = "priority_low"
+capture = "priority_low.txt"
+libcsp_repo = "https://github.com/libcsp/libcsp"
+libcsp_tag = "v2.1"
+libcsp_commit = "48f7fb0"
+command = "zmqproxy & zmq_capture tcp://127.0.0.1:7000 1 15 /app/tests/golden_vectors/zmq/priority_low.txt & /app/tests/golden_vectors/bin/csp_client -z 127.0.0.1 -p -d 2 -r 3"
+capture_command = "regenerate-zmq-vectors.sh runs libcsp's zmqproxy hub, subscribes zmq_capture to its publish port (7000) and sends with csp_client -z through the subscribe port (6000)"
+interface = "zmq"
+meaning = "CSP_PRIO_LOW (3), the high end of the priority field."
+protocol = "CSP v2 over ZeroMQ (libcsp zmqhub), one CSP packet per message"
+source_address = 1
+destination_address = 2
+expected_message_count = 1
+expected_messages_hex = ["C0 02 00 04 14 80 55"]
+expected_payloads_hex = ["55"]

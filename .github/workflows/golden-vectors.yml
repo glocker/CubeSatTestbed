@@ -95,8 +95,8 @@ jobs:
 
       - name: Fail if regenerated vectors differ from committed fixtures
         run: |
-          if ! git diff --exit-code -- tests/golden_vectors/*.txt tests/golden_vectors/kiss/*.txt; then
-            echo "::error::Freshly captured CAN and KISS traffic from libcsp v2.1 (48f7fb0) no longer matches the committed golden vectors."
+          if ! git diff --exit-code -- tests/golden_vectors/*.txt tests/golden_vectors/kiss/*.txt tests/golden_vectors/zmq/*.txt; then
+            echo "::error::Freshly captured CAN, KISS and ZeroMQ traffic from libcsp v2.1 (48f7fb0) no longer matches the committed golden vectors."
             echo "::error::Either upstream libcsp changed on-wire behavior, or a committed fixture is stale. Investigate before merging."
             exit 1
           fi

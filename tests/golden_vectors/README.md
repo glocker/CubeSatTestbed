@@ -216,6 +216,48 @@ What the vectors show about libcsp `v2.1`:
 | `escape_fend`, `escape_fesc` | payloads containing the KISS control bytes |
 | `two_packets` | back-to-back frames |
 
+### ZeroMQ vectors
+
+`zmq/` holds fixtures for CSP v2 through a libcsp ZeroMQ hub. They need no `vcan0`
+and no pty: `scripts/regenerate-zmq-vectors.sh` starts libcsp's own `zmqproxy` hub on
+localhost, subscribes the repository-owned `bin/zmq_capture` (built from
+`src/zmq_capture.c`, a listener like `candump`) to its publish port, and sends with
+`csp_client -z 127.0.0.1 -p ...` through libcsp's own ZeroMQ interface. Regenerate
+them with:
+
+```sh
+docker compose exec -T libcsp-vectors /app/tests/golden_vectors/scripts/regenerate-zmq-vectors.sh
+```
+
+(`regenerate-vectors.sh` runs it too, which is what CI uses.) The image needs
+`libzmq3-dev` for libcsp to build its ZeroMQ interface; the `Dockerfile` installs it.
+A capture file has one line per message, space-separated upper-case hex. Its
+`*.meta.toml` records `interface = "zmq"`, the generation command, and
+`expected_messages_hex` / `expected_payloads_hex`.
+
+What the vectors show about libcsp `v2.1`:
+
+- a message is the 6-byte CSP v2 header (network byte order, full 14-bit addresses)
+  followed by the payload, and nothing else: no framing, no escaping, no topic or
+  address prefix (the prefix byte exists only for CSP v1), **no CRC32**;
+- unlike KISS, the interface adds nothing to a packet, so a `CSP_FLAG_CRC32` or
+  `CSP_FLAG_HMAC` packet carries only the flag's own 4-byte trailer;
+- there is no fragmentation: 64- and 200-byte payloads are one message;
+- libcsp's ZeroMQ interface subscribes to *everything* (an empty filter, the
+  `rxfilter` arguments of the init functions are ignored in `v2.1`) and a client
+  publishes to the hub's subscribe port (6000) and subscribes from its publish
+  port (7000).
+
+| Vector | Covers |
+| --- | --- |
+| `ping` | baseline: `src=1 dst=2`, 1-byte payload |
+| `payload_empty`, `payload_64`, `payload_200` | payload bounds, no fragmentation |
+| `priority_critical`, `priority_low` | the priority field |
+| `high_address`, `max_address` | 14-bit addresses kept whole |
+| `reverse_direction` | the node pair addressed the other way |
+| `flag_crc32`, `flag_hmac` | the flag's own trailer and no second CRC32 |
+| `two_packets` | back-to-back messages |
+
 ### Multi-frame fixtures
 
 A multi-frame capture file holds one `candump` line per CAN frame, in the order

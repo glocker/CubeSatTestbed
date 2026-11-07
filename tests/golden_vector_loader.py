@@ -8,6 +8,7 @@ from typing import Any
 
 GOLDEN_VECTOR_DIR = Path(__file__).resolve().parent / "golden_vectors"
 KISS_VECTOR_DIR = GOLDEN_VECTOR_DIR / "kiss"
+ZMQ_VECTOR_DIR = GOLDEN_VECTOR_DIR / "zmq"
 PINNED_LIBCSP_REPO = "https://github.com/libcsp/libcsp"
 PINNED_LIBCSP_TAG = "v2.1"
 PINNED_LIBCSP_COMMIT = "48f7fb0"
@@ -343,3 +344,53 @@ def parse_kiss_capture_file(path: Path) -> tuple[bytes, ...]:
     if not frames:
         raise GoldenVectorError(f"{path}: no KISS frames found")
     return tuple(frames)
+
+
+@dataclass(frozen=True)
+class ZmqGoldenVector:
+    """Loaded metadata and messages for one ZeroMQ golden-vector fixture pair.
+
+    ``messages`` are the exact bytes of each message libcsp published to the hub,
+    one entry per message in capture order: the 6-byte CSP v2 header followed by the
+    payload, with no framing, CRC or topic around them.
+    """
+
+    name: str
+    metadata_path: Path
+    capture_path: Path
+    metadata: dict[str, Any]
+    messages: tuple[bytes, ...]
+
+
+def discover_zmq_vector_metadata(
+    vector_dir: Path = ZMQ_VECTOR_DIR,
+) -> tuple[Path, ...]:
+    """Return committed ZeroMQ golden-vector metadata files in deterministic order."""
+
+    return tuple(sorted(vector_dir.glob("*.meta.toml")))
+
+
+def load_zmq_vectors(vector_dir: Path = ZMQ_VECTOR_DIR) -> tuple[ZmqGoldenVector, ...]:
+    """Discover and load all committed ZeroMQ golden-vector fixture pairs."""
+
+    return tuple(load_zmq_vector(path) for path in discover_zmq_vector_metadata(vector_dir))
+
+
+def load_zmq_vector(metadata_path: Path) -> ZmqGoldenVector:
+    """Load one ZeroMQ ``*.meta.toml`` file and its sibling message capture."""
+
+    metadata = _load_toml(metadata_path)
+    name = _required_metadata_str(metadata, "name", metadata_path)
+    capture_name = _required_metadata_str(metadata, "capture", metadata_path)
+    capture_path = _sibling_capture_path(metadata_path, capture_name)
+    if not capture_path.is_file():
+        raise GoldenVectorError(
+            f"{metadata_path}: capture file {capture_name!r} does not exist next to metadata"
+        )
+    return ZmqGoldenVector(
+        name=name,
+        metadata_path=metadata_path,
+        capture_path=capture_path,
+        metadata=metadata,
+        messages=parse_kiss_capture_file(capture_path),  # same format: one hex line per unit
+    )
