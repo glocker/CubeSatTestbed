@@ -176,8 +176,41 @@ class KissTransportConfig(BaseModel):
     baudrate: int = Field(default=115200, ge=1)
 
 
+class ZmqTransportConfig(BaseModel):
+    """CSP v2 through a libcsp ZeroMQ hub (``zmqproxy``), as one more client of it.
+
+    The names and defaults are libcsp's own (``csp_zmqhub_init_w_endpoints``):
+    ``publish_endpoint`` is where the testbed publishes, the hub's *subscribe* port
+    (6000), and ``subscribe_endpoint`` where it listens, the hub's *publish* port
+    (7000). Packets for the nodes the testbed simulates stay inside it; everything
+    else is published to the hub. Needs the optional ``pyzmq`` extra
+    (``pip install 'cubesat-testbed[zmq]'``).
+
+    ``settle_seconds`` is the wall-clock pause after connecting that lets the hub and
+    this client learn each other's subscriptions; ZeroMQ PUB/SUB drops what is sent
+    before that. Use 0 for a hub known to be ready.
+    """
+
+    model_config = _SCHEMA_MODEL_CONFIG
+
+    type: Literal["zmq"]
+    publish_endpoint: str = "tcp://127.0.0.1:6000"
+    subscribe_endpoint: str = "tcp://127.0.0.1:7000"
+    settle_seconds: float = Field(default=0.5, ge=0)
+
+    @field_validator("publish_endpoint", "subscribe_endpoint")
+    @classmethod
+    def _validate_endpoint(cls, value: str) -> str:
+        scheme, separator, rest = value.partition("://")
+        if not separator or not rest or scheme not in {"tcp", "ipc"}:
+            raise ValueError(
+                f"ZMQ endpoint must look like 'tcp://host:port' or 'ipc://path', got {value!r}"
+            )
+        return value
+
+
 TransportConfig: TypeAlias = Annotated[
-    InMemoryTransportConfig | SocketCanTransportConfig | KissTransportConfig,
+    InMemoryTransportConfig | SocketCanTransportConfig | KissTransportConfig | ZmqTransportConfig,
     Field(discriminator="type"),
 ]
 

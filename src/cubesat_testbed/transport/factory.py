@@ -9,11 +9,13 @@ from cubesat_testbed.config import (
     KissTransportConfig,
     SocketCanTransportConfig,
     TransportConfig,
+    ZmqTransportConfig,
 )
 from cubesat_testbed.transport.base import EndpointId, TransportAdapter
 from cubesat_testbed.transport.in_memory import InMemoryBusAdapter
 from cubesat_testbed.transport.kiss import KissAdapter
 from cubesat_testbed.transport.socketcan import CanBusLike, SocketCanAdapter
+from cubesat_testbed.transport.zmq import ZmqAdapter
 
 
 def build_transport_adapter(
@@ -32,9 +34,10 @@ def build_transport_adapter(
     validated config; ``socketcan_bus`` exists for tests or advanced callers that
     already own a ``python-can`` bus object.
 
-    ``local_addresses`` and ``max_packet_bytes`` apply only to ``kiss``: the CSP
-    addresses of the nodes the testbed simulates (delivered locally, never put on
-    the serial line) and the receive buffer applied to frames read from the line.
+    ``local_addresses`` and ``max_packet_bytes`` apply only to the whole-packet links
+    (``kiss``, ``zmq``): the CSP addresses of the nodes the testbed simulates
+    (delivered locally, never put on the link) and the receive buffer applied to
+    what is read from it.
     """
 
     if isinstance(config, InMemoryTransportConfig):
@@ -50,6 +53,14 @@ def build_transport_adapter(
         return KissAdapter.open(
             config.device,
             baudrate=config.baudrate,
+            local_addresses=local_addresses,
+            max_packet_bytes=max_packet_bytes,
+        )
+    if isinstance(config, ZmqTransportConfig):
+        return ZmqAdapter.open(
+            config.publish_endpoint,
+            config.subscribe_endpoint,
+            settle_seconds=config.settle_seconds,
             local_addresses=local_addresses,
             max_packet_bytes=max_packet_bytes,
         )

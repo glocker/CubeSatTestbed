@@ -50,12 +50,14 @@ class CspPacketFrame:
     ``wire`` is the exact bytes the link put on the line for this packet (for
     KISS, the frame from ``FEND`` to ``FEND``), kept so a trace can show them. It
     is empty for a packet that never touched a line, such as one delivered between
-    two simulated nodes.
+    two simulated nodes. ``link`` names the link the bytes crossed (``serial``,
+    ``zmq``) and is empty exactly when ``wire`` is.
     """
 
     fields: CspFields
     payload: bytes
     wire: bytes = b""
+    link: str = ""
 
     def __post_init__(self) -> None:
         try:

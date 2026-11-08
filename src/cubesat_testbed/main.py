@@ -17,6 +17,7 @@ from cubesat_testbed.config import (
     KissTransportConfig,
     SocketCanTransportConfig,
     TestbedConfig,
+    ZmqTransportConfig,
     load_testbed_config,
 )
 from cubesat_testbed.examples import (
@@ -348,6 +349,13 @@ def _warn_on_unpaced_socketcan(setup: TestbedConfig, *, realtime: bool) -> None:
     if isinstance(setup.transport, SocketCanTransportConfig):
         print(
             f"warning: transport.type='socketcan' (interface {setup.transport.interface!r}) "
+            "without --realtime; virtual time is not paced against wall-clock time, so a "
+            "real peer gets no time to respond",
+            file=sys.stderr,
+        )
+    elif isinstance(setup.transport, ZmqTransportConfig):
+        print(
+            f"warning: transport.type='zmq' (hub {setup.transport.publish_endpoint!r}) "
             "without --realtime; virtual time is not paced against wall-clock time, so a "
             "real peer gets no time to respond",
             file=sys.stderr,

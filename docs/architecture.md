@@ -23,7 +23,11 @@ src/cubesat_testbed/
   transport/socketcan.py  # Linux SocketCAN adapter
   transport/kiss.py       # serial KISS adapter (whole CSP packets, local delivery)
   transport/serial_line.py # termios serial line (tty or pty), standard library only
-  protocol/csp_v2_packet.py # whole-packet frame and 6-byte header shared by KISS (and ZMQ)
+  transport/whole_packet.py # routing shared by the whole-packet links (KISS, ZMQ)
+  transport/zmq.py        # ZeroMQ adapter: a client of a libcsp zmqproxy hub
+  transport/zmq_link.py   # pyzmq PUB/SUB connection (optional `zmq` extra)
+  protocol/csp_v2_packet.py # whole-packet frame and 6-byte header shared by KISS and ZMQ
+  protocol/csp_v2_zmq.py  # ZeroMQ message layout (header + payload)
   protocol/csp_v2_kiss.py # KISS framing, CRC-32C and the receive state machine
   modules/base.py         # Module/FSM contract
   modules/registry.py     # module_type registry: factories, params, build order
@@ -54,11 +58,11 @@ src/cubesat_testbed/
 
 3. **Protocol and transport adapters**
    - Protocol: v1 ships CSP v2 only.
-   - Transport: v1 ships `InMemoryBusAdapter`, `SocketCanAdapter` and
-     `KissAdapter`, built from setup config by
+   - Transport: v1 ships `InMemoryBusAdapter`, `SocketCanAdapter`, `KissAdapter`
+     and `ZmqAdapter`, built from setup config by
      `transport.factory.build_transport_adapter`. What crosses the boundary is a
      `Frame`: a CAN frame (a packet may span several) or a whole-packet frame
-     (KISS). How a packet becomes frames is asked of the adapter
+     (KISS, ZMQ). How a packet becomes frames is asked of the adapter
      (`new_sender`), so the runner and OBC Peer do not know which link they are on.
      The CAN and whole-packet code paths share nothing but the CSP header fields.
    - `receive(timeout=...)` lets a caller block up to `timeout` real seconds

@@ -22,6 +22,9 @@ from cubesat_testbed.transport.tracing import (
     TracingTransportAdapter,
     format_trace_line,
 )
+from cubesat_testbed.transport.whole_packet import WholePacketAdapter
+from cubesat_testbed.transport.zmq import ZmqAdapter
+from cubesat_testbed.transport.zmq_link import MessageLink, PyzmqMessageLink
 
 __all__ = [
     "CanBusLike",
@@ -31,7 +34,9 @@ __all__ = [
     "FrameAnnotator",
     "InMemoryBusAdapter",
     "KissAdapter",
+    "MessageLink",
     "PacketSender",
+    "PyzmqMessageLink",
     "SerialLine",
     "SocketCanAdapter",
     "TermiosSerialLine",
@@ -41,7 +46,9 @@ __all__ = [
     "TransportEndpointError",
     "TransportEnvelope",
     "TransportError",
+    "WholePacketAdapter",
     "WholePacketSender",
+    "ZmqAdapter",
     "build_transport_adapter",
     "format_trace_line",
 ]

@@ -22,8 +22,9 @@ official libcsp `v2.1` at commit `48f7fb0` — see
 [`tests/golden_vectors/README.md`](../tests/golden_vectors/README.md) for the
 generation workflow and fixture contract.
 
-CSP v2 also runs over a **serial KISS line**, as a separate code path from CAN —
-see [Serial KISS transport](#serial-kiss-transport).
+CSP v2 also runs over a **serial KISS line** and through a **ZeroMQ hub**, each as a
+separate code path from CAN — see [Serial KISS transport](#serial-kiss-transport)
+and [ZeroMQ transport](#zeromq-transport).
 
 Planned later, not implemented in v1:
 
@@ -298,6 +299,60 @@ the same line, or at the other end of a pty pair, with
 Out of scope: KISS over anything but a byte stream, non-standard baud rates, and
 hardware flow control.
 
+## ZeroMQ transport
+
+`transport.type = "zmq"` makes the testbed one more client of a libcsp ZeroMQ hub
+(`zmqproxy`), the usual way libcsp applications on a Linux host are joined. An
+unmodified libcsp process on the same hub can then talk to a simulated node, and
+the other way round, with no CAN adapter or kernel module:
+
+```toml
+[transport]
+type = "zmq"
+publish_endpoint = "tcp://127.0.0.1:6000"    # where the testbed publishes (default)
+subscribe_endpoint = "tcp://127.0.0.1:7000"  # where it listens (default)
+settle_seconds = 0.5                          # default; 0 for a hub known to be ready
+```
+
+The names and ports are libcsp's own (`csp_zmqhub_init_w_endpoints`): a client
+publishes to the hub's *subscribe* port and subscribes from its *publish* port. It
+needs the optional `pyzmq` dependency, imported only when the transport is used:
+
+```sh
+pip install 'cubesat-testbed[zmq]'
+```
+
+The layout is fixed by the golden vectors in `tests/golden_vectors/zmq/`:
+
+- **Message.** The 6-byte CSP v2 header (full 14-bit addresses) followed by the
+  payload, and nothing else: no framing or escaping, no topic or address prefix
+  (that byte is CSP v1 only), no fragmentation.
+- **No CRC32.** Unlike KISS, the interface adds no trailer. A packet carrying
+  `CSP_FLAG_CRC32` has only that flag's own trailer inside its payload.
+- **No filter.** libcsp's ZeroMQ interface subscribes to everything, so the testbed
+  does too and selects by CSP address itself.
+- **Routing**, as for KISS: a packet for a node the testbed simulates is delivered
+  inside it and never reaches the hub; a packet for any other address
+  (`software`/`hardware` nodes) is published; every message the hub delivers is
+  received.
+- **The hub echoes.** A hub broadcasts to every subscriber, the sender included, so
+  what the testbed publishes comes back. A message whose source is one of the
+  testbed's own simulated addresses can only be that echo and is ignored.
+- **Messages the link rejects are reported, never swallowed**: shorter than a header
+  (`too_short`), a payload over the receive buffer (`overflow`), an unsupported
+  header (`malformed`) appear as `DROP` lines, in `--json` and in `--trace`; a
+  packet over the *receiving node's* `max_packet_bytes` is dropped as `overflow` too.
+- **Trace.** A packet is one line: `link=zmq` with the exact message as `data`, or
+  `link=local` and `data=-` when it never left the testbed.
+- **Pacing.** ZeroMQ PUB/SUB silently drops anything sent before the hub and the
+  client have learned each other's subscriptions, which is why libcsp's own examples
+  sleep after connecting. `settle_seconds` is that pause, once, at connect time, in
+  wall-clock time and outside virtual time. Run with `--realtime`, as for
+  SocketCAN, so a real peer gets time to answer; without it the CLI warns.
+
+Out of scope: a hub embedded in the testbed (it is always a client), ZeroMQ
+authentication (CURVE), and CSP v1's one-byte address prefix.
+
 ## Telemetry wire encoding
 
 Every configured telemetry signal requires a byte-aligned wire layout
@@ -398,8 +453,8 @@ builds a runtime from either transport type, giving a locally simulated
 module only to `simulated` nodes. A `software`/`hardware` node is never
 simulated: it is reached and observed purely as CSP-over-CAN traffic on the
 transport, whether that traffic comes from a real board, a real process on
-`vcan0` or on the other end of a serial line, or a scenario test manually placing
-frames on the in-memory bus.
+`vcan0`, on the other end of a serial line or on a ZeroMQ hub, or a scenario test
+manually placing frames on the in-memory bus.
 
 By default, `wait()` uses `cubesat_testbed.clock.VirtualClock` and jumps
 straight to its target virtual time, exactly as before. Passing
