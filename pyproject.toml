@@ -39,7 +39,11 @@ dev = [
     "mypy>=1.11",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "pyzmq>=25",
     "ruff>=0.6",
+]
+zmq = [
+    "pyzmq>=25",
 ]
 
 [build-system]

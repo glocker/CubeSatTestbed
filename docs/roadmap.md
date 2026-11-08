@@ -22,6 +22,7 @@
 - [x] Implement the CSP v2 single-frame codec against the fixed vectors.
 - [x] CFP2 fragmentation and reassembly (multi-frame golden vectors first).
 - [x] Serial KISS transport (KISS golden vectors first).
+- [x] ZeroMQ transport (ZeroMQ golden vectors first).
 
 ### Phase 2: Core Engine & CLI
 

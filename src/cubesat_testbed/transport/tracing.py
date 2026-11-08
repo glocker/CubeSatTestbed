@@ -26,11 +26,12 @@ an in-memory frame is traced once in each direction; whether a node *accepted*
 the packet, or dropped it as too large, lost or late, is the runner's business
 and is reported as ``DROP`` lines.
 
-A packet carried whole (serial KISS) is one line: ``link=serial`` with the exact
-KISS frame as ``data`` when it went over the line, or ``link=local`` with
-``data=-`` when it was delivered between two simulated nodes, then the header
+A packet carried whole (serial KISS, ZeroMQ) is one line: ``link=serial`` or
+``link=zmq`` with the exact bytes the link carried as ``data`` when it went over
+the link, or ``link=local`` with ``data=-`` when it was delivered between two
+simulated nodes, then the header
 fields, the ``payload`` and the same annotation a CAN packet gets. Frames the
-serial link itself rejects (bad CRC32, oversized) are reported as ``DROP`` lines
+link itself rejects (a serial CRC32 mismatch, an oversized message) are reported as ``DROP`` lines
 by the runner, like a lost CAN fragment.
 
 Tracing is observability only. It never alters delivery, ordering or virtual
@@ -243,7 +244,7 @@ def _format_packet_line(
     """Describe a packet that a link carries whole; see the module docstring."""
 
     fields = frame.fields
-    parts.append("link=serial" if frame.wire else "link=local")
+    parts.append(f"link={frame.link or 'local'}")
     parts.extend(
         (
             f"pri={fields.priority}",

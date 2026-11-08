@@ -35,9 +35,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   CRC32, too short, oversized) are reported as dropped packets. The serial port is
   opened with the standard library's `termios`; no new dependency. See
   [`docs/v1-scope.md`](docs/v1-scope.md#serial-kiss-transport).
-- `--trace` shows a whole-packet frame as one line (`link=serial|local`).
-- `run` warns on stderr, as for SocketCAN, when a `kiss` transport is used without
-  `--realtime`.
+- ZeroMQ transport (`transport.type = "zmq"`): the testbed as a client of a libcsp
+  `zmqproxy` hub, so an unmodified libcsp process can exchange CSP v2 packets with a
+  simulated node. A message is the 6-byte header plus the payload with no CRC32,
+  framing or topic, as fixed by twelve ZeroMQ golden vectors captured from libcsp
+  through its own hub. Needs the optional extra: `pip install 'cubesat-testbed[zmq]'`
+  (`pyzmq` is imported only when the transport is used). Packets for simulated nodes
+  stay inside the testbed; the hub's echo of the testbed's own publications is
+  ignored; messages the link rejects are reported as dropped packets. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#zeromq-transport).
+- The whole-packet links (KISS, ZMQ) share one routing and delivery implementation
+  (`transport/whole_packet.py`); KISS behaviour is unchanged.
+- `--trace` shows a whole-packet frame as one line (`link=serial|zmq|local`).
+- `run` warns on stderr, as for SocketCAN, when a `kiss` or `zmq` transport is used
+  without `--realtime`.
 - `TransportAdapter.new_sender()` and `take_drops()`: how a packet becomes frames, and
   what a link discarded, are now the transport's business, so the runner and OBC
   Peer work unchanged over CAN and serial.
