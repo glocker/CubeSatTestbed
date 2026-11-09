@@ -31,6 +31,7 @@ from cubesat_testbed.protocol.csp_v2 import (
     CSP_V2_PORT_MAX,
     CSP_V2_PRIORITY_MAX,
 )
+from cubesat_testbed.protocol.csp_v2_kiss import KISS_CRC32_BYTES
 
 _RESERVED_PARAM_NAMES = frozenset({"name", "endpoint"})
 """params keys module config dataclasses always receive from the node itself."""
@@ -588,11 +589,26 @@ class TestbedConfig(BaseModel):
                 # situation to simulate, so that packet is sent and the target
                 # drops it, visibly, at run time.
                 limit = node.max_packet_bytes
-                if len(command.payload_hex) > limit:
+                # A KISS frame's 4-byte CRC32 shares the packet buffer with the
+                # payload, but only a command that can leave on the line (one whose
+                # target is not simulated) is ever framed; a command to a simulated
+                # node is delivered inside the testbed and carries no CRC32.
+                leaves_on_kiss_line = (
+                    isinstance(self.transport, KissTransportConfig)
+                    and self.nodes[command.target].mode is not NodeMode.SIMULATED
+                )
+                payload_limit = max(0, limit - KISS_CRC32_BYTES) if leaves_on_kiss_line else limit
+                if len(command.payload_hex) > payload_limit:
+                    crc_note = (
+                        f" (the {KISS_CRC32_BYTES}-byte KISS CRC32 shares that buffer, leaving "
+                        f"{payload_limit} for the payload)"
+                        if leaves_on_kiss_line
+                        else ""
+                    )
                     raise ValueError(
                         f"command {node_name}.{command_name} payload_hex is "
                         f"{len(command.payload_hex)} bytes, over the sending node "
-                        f"{node_name!r} max_packet_bytes={limit}"
+                        f"{node_name!r} max_packet_bytes={limit}{crc_note}"
                     )
 
     def _validate_telemetry_mappings(self) -> None:

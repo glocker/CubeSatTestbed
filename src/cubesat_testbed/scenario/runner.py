@@ -678,15 +678,16 @@ class ScenarioRunner:
 
         destination = packet.fields.destination
         limit = self._limits_by_address.get(destination, CSP_V2_DEFAULT_MAX_PACKET_BYTES)
-        if len(packet.payload) > limit:
+        payload_limit = self.runtime.transport.payload_limit(limit)
+        if len(packet.payload) > payload_limit:
             self._append_drop(
                 DroppedPacket(
                     time=self.runtime.engine.now,
                     destination=destination,
                     sender=packet.fields.source,
                     reason="overflow",
-                    detail=f"payload of {len(packet.payload)} bytes is over "
-                    f"max_packet_bytes={limit}",
+                    detail=f"payload of {len(packet.payload)} bytes is over the node's "
+                    f"limit of {payload_limit} bytes (max_packet_bytes={limit})",
                     limit=limit,
                 )
             )

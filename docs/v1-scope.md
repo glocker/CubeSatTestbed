@@ -273,7 +273,15 @@ baudrate = 115200         # default; standard rates only
   (Castagnoli), over the payload only, big-endian; a receiver also accepts it over
   header plus payload, as libcsp does.
 - **No fragmentation.** A frame carries one whole packet; the CFP2 rules above are
-  CAN-only. The size limit is still the node's `max_packet_bytes`.
+  CAN-only.
+- **Size limit.** The CRC32 shares libcsp's packet buffer with the payload, so on KISS
+  the payload limit is `max_packet_bytes − 4` (252 at the default 256), not
+  `max_packet_bytes`. A command that can leave on the line and does not fit is a
+  config error naming both numbers; one to a simulated node is delivered inside the
+  testbed with no CRC32 and keeps the full `max_packet_bytes`. libcsp itself is
+  asymmetric at the very edge: it will *send* a 252-byte payload but its receive side
+  drops it (a frame must stay under `max_packet_bytes + 6` bytes), so 251 is the
+  largest payload that round-trips. The testbed reproduces both halves.
 - **A line has two ends.** A packet addressed to a node the testbed simulates is
   delivered inside it and never reaches the line; a packet for any other address
   (`software`/`hardware` nodes) goes out as a KISS frame, and every frame arriving

@@ -16,7 +16,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from cubesat_testbed.protocol.csp_v2 import CSP_V2_DEFAULT_MAX_PACKET_BYTES, CspV2CodecError
-from cubesat_testbed.protocol.csp_v2_kiss import KissDecoder, encode_kiss_frame
+from cubesat_testbed.protocol.csp_v2_kiss import (
+    KISS_CRC32_BYTES,
+    KissDecoder,
+    encode_kiss_frame,
+)
 from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame
 from cubesat_testbed.transport.base import TransportDrop, TransportError
 from cubesat_testbed.transport.serial_line import SerialLine, TermiosSerialLine
@@ -55,6 +59,11 @@ class KissAdapter(WholePacketAdapter):
             local_addresses=local_addresses,
             max_packet_bytes=max_packet_bytes,
         )
+
+    def payload_limit(self, max_packet_bytes: int) -> int:
+        """The KISS CRC32 shares libcsp's packet buffer with the payload, so it costs 4 bytes."""
+
+        return max(0, max_packet_bytes - KISS_CRC32_BYTES)
 
     def _emit(self, packet: CspPacketFrame) -> CspPacketFrame:
         try:
