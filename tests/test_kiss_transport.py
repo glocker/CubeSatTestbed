@@ -226,12 +226,35 @@ def test_adapter_refuses_can_frames_and_oversized_packets_and_closes_once() -> N
 
 
 def test_new_sender_builds_one_whole_packet_frame_and_enforces_the_limit() -> None:
-    sender = KissAdapter(LoopLine()).new_sender(max_packet_bytes=8)
+    sender = KissAdapter(LoopLine()).new_sender(max_packet_bytes=12)
 
-    (frame,) = sender.frames(PING, bytes(8))
+    (frame,) = sender.frames(PING, bytes(8))  # 12 bytes of buffer minus the 4-byte CRC32
     assert isinstance(frame, CspPacketFrame) and frame.payload == bytes(8)
-    with pytest.raises(CspV2FrameError, match="max_packet_bytes=8"):
+    with pytest.raises(CspV2FrameError, match=r"limit of 8 bytes \(max_packet_bytes=12\)"):
         sender.frames(PING, bytes(9))
+
+
+def test_kiss_payload_limit_leaves_room_for_the_crc32() -> None:
+    adapter = KissAdapter(LoopLine())
+
+    assert adapter.payload_limit(256) == 252
+    assert adapter.payload_limit(4) == 0
+    assert adapter.payload_limit(2) == 0  # never negative
+
+
+def test_every_payload_the_sender_accepts_can_actually_be_put_on_the_line() -> None:
+    """The sender's limit and the encoder's must agree, or a run dies mid-scenario."""
+
+    line = LoopLine()
+    adapter = KissAdapter(line, local_addresses=[2])
+    sender = adapter.new_sender(max_packet_bytes=256)
+
+    for length in (0, 1, 251, 252):
+        (frame,) = sender.frames(PING, bytes(length))
+        adapter.send(frame, source=1)  # does not raise
+    for length in (253, 256):
+        with pytest.raises(CspV2FrameError):  # refused up front, as a clear error
+            sender.frames(PING, bytes(length))
 
 
 def test_factory_builds_a_kiss_adapter_from_config(serial_pty: Pty) -> None:
@@ -268,6 +291,50 @@ def test_setup_parses_a_kiss_transport_with_a_default_baudrate() -> None:
     assert setup.transport == KissTransportConfig(
         type="kiss", device="/dev/ttyUSB0", baudrate=115200
     )
+
+
+def _command_setup(transport: str, target_mode: str, payload_len: int) -> str:
+    return f"""
+[transport]
+{transport}
+
+[nodes.obc]
+mode = "simulated"
+module_type = "obc_peer"
+address = 1
+
+[nodes.payload]
+mode = "{target_mode}"
+address = 3
+{'module_type = "simple_payload"' if target_mode == "simulated" else ""}
+
+[nodes.obc.commands.big]
+target = "payload"
+destination_port = 10
+source_port = 10
+payload_hex = "{"00" * payload_len}"
+"""
+
+
+@pytest.mark.parametrize(("length", "accepted"), [(252, True), (253, False), (256, False)])
+def test_config_applies_the_crc32_overhead_to_commands_that_leave_on_the_line(
+    length: int, accepted: bool
+) -> None:
+    text = _command_setup('type = "kiss"\ndevice = "/dev/ttyUSB0"', "software", length)
+
+    if accepted:
+        parse_testbed_config(text)
+    else:
+        with pytest.raises(ValueError, match=r"leaving 252 for the payload"):
+            parse_testbed_config(text)
+
+
+def test_config_does_not_charge_the_crc32_to_a_command_that_stays_inside_the_testbed() -> None:
+    parse_testbed_config(_command_setup('type = "kiss"\ndevice = "/dev/ttyUSB0"', "simulated", 256))
+
+
+def test_the_crc32_overhead_is_a_kiss_matter_not_a_general_one() -> None:
+    parse_testbed_config(_command_setup('type = "in-memory"', "software", 256))
 
 
 # --- scenarios over a pty ------------------------------------------------------------
@@ -399,6 +466,44 @@ def test_a_packet_over_the_receiving_nodes_limit_is_dropped_not_delivered(
     assert [(d.reason, d.sender, d.destination, d.limit) for d in result.dropped_packets] == [
         ("overflow", 2, 3, 3)
     ]
+
+
+def test_a_scenario_sends_the_largest_command_the_link_allows(serial_pty: Pty) -> None:
+    setup = parse_testbed_config(
+        _command_setup(f'type = "kiss"\ndevice = "{serial_pty.path}"', "software", 252)
+    )
+    scenario = parse_scenario(
+        "name: big\nsteps:\n  - action: send_command\n    command: big\n"
+        "    source: obc\n    target: payload\n  - action: wait\n    virtual_time: 1s\n",
+        setup=setup,
+    )
+
+    result = run_scenario(scenario, setup, output=io.StringIO())
+
+    wire = serial_pty.pull(252 + 6 + 4 + 3)
+    # Decoded with a roomier buffer: libcsp's own receive side drops this very frame
+    # (see the next test), an asymmetry in libcsp itself that the testbed reproduces.
+    (event,) = KissDecoder(max_packet_bytes=1000).feed(wire)
+    assert result.dropped_packets == ()
+    assert event.packet is not None and event.packet.payload == bytes(252)
+
+
+def test_the_receive_side_drops_a_frame_at_the_same_boundary_a_libcsp_peer_does(
+    serial_pty: Pty,
+) -> None:
+    to_payload = CspFields(priority=2, source=2, destination=3, destination_port=9, source_port=9)
+    setup = parse_testbed_config(
+        _command_setup(f'type = "kiss"\ndevice = "{serial_pty.path}"', "simulated", 1)
+    )
+    scenario = parse_scenario(
+        "name: rx\nsteps:\n  - action: wait\n    virtual_time: 1s\n", setup=setup
+    )
+    for length in (251, 252):
+        serial_pty.push(encode_kiss_frame(to_payload, bytes(length), max_packet_bytes=1000))
+
+    result = run_scenario(scenario, setup, output=io.StringIO())
+
+    assert [(d.reason, d.limit) for d in result.dropped_packets] == [("overflow", 256)]
 
 
 def test_kiss_runs_are_identical_across_repeats() -> None:

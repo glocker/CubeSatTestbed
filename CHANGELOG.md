@@ -53,6 +53,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   what a link discarded, are now the transport's business, so the runner and OBC
   Peer work unchanged over CAN and serial.
 
+### Fixed
+
+- KISS: a payload of 253-256 bytes passed config validation and the sender's size
+  check, then failed mid-run with a raw `TransportError`, because the 4-byte CRC32
+  shares the packet buffer with the payload. The limit is now `max_packet_bytes − 4`
+  everywhere it is checked: a command that can leave on the line is rejected when the
+  config loads (a command to a simulated node is unaffected), the sender refuses it
+  with a clear message, and the receiving node's limit agrees. New
+  `TransportAdapter.payload_limit()` is the one place that answer lives.
+
 ### Changed
 
 - A command `payload_hex` or telemetry layout longer than 4 bytes is accepted;

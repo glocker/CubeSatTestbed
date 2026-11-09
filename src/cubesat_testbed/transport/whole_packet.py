@@ -88,7 +88,10 @@ class WholePacketAdapter(TransportAdapter):
     def new_sender(
         self, *, max_packet_bytes: int = CSP_V2_DEFAULT_MAX_PACKET_BYTES
     ) -> PacketSender:
-        return WholePacketSender(max_packet_bytes=max_packet_bytes)
+        return WholePacketSender(
+            max_packet_bytes=max_packet_bytes,
+            payload_limit=self.payload_limit(max_packet_bytes),
+        )
 
     def take_drops(self) -> tuple[TransportDrop, ...]:
         drops = tuple(self._drops)

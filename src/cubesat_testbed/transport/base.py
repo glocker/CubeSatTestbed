@@ -94,16 +94,27 @@ class CanPacketSender:
 
 
 class WholePacketSender:
-    """Links that carry a packet whole: one packet is exactly one frame."""
+    """Links that carry a packet whole: one packet is exactly one frame.
 
-    def __init__(self, *, max_packet_bytes: int = CSP_V2_DEFAULT_MAX_PACKET_BYTES) -> None:
+    ``max_packet_bytes`` is the node's packet buffer. ``payload_limit`` is how much
+    payload actually fits it on this link, which is less when the link puts its own
+    bytes in the same buffer (the KISS CRC32); it defaults to ``max_packet_bytes``.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_packet_bytes: int = CSP_V2_DEFAULT_MAX_PACKET_BYTES,
+        payload_limit: int | None = None,
+    ) -> None:
         self.max_packet_bytes = max_packet_bytes
+        self.payload_limit = max_packet_bytes if payload_limit is None else payload_limit
 
     def frames(self, fields: CspFields, payload: bytes) -> tuple[Frame, ...]:
-        if len(payload) > self.max_packet_bytes:
+        if len(payload) > self.payload_limit:
             raise CspV2FrameError(
-                f"CSP payload of {len(payload)} bytes exceeds the sender's "
-                f"max_packet_bytes={self.max_packet_bytes}"
+                f"CSP payload of {len(payload)} bytes exceeds the sender's limit of "
+                f"{self.payload_limit} bytes (max_packet_bytes={self.max_packet_bytes})"
             )
         return (CspPacketFrame(fields=fields, payload=payload),)
 
@@ -146,6 +157,18 @@ class TransportAdapter(ABC):
         """
 
         return CanPacketSender(max_packet_bytes=max_packet_bytes)
+
+    def payload_limit(self, max_packet_bytes: int) -> int:
+        """How many payload bytes fit a node's ``max_packet_bytes`` buffer on this link.
+
+        The buffer holds the payload and, on some links, bytes the link adds itself:
+        a KISS frame's 4-byte CRC32 shares libcsp's packet buffer with the payload.
+        The default, for links that add nothing, is the whole buffer. Config
+        validation, senders and the receiving node's limit all use this one answer,
+        so a packet is refused in the same place whichever side checks it.
+        """
+
+        return max_packet_bytes
 
     def take_drops(self) -> tuple[TransportDrop, ...]:
         """Return, and forget, what the adapter discarded since the last call.

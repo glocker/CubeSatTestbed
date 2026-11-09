@@ -144,6 +144,11 @@ class TracingTransportAdapter(TransportAdapter):
 
         return self._inner.new_sender(max_packet_bytes=max_packet_bytes)
 
+    def payload_limit(self, max_packet_bytes: int) -> int:
+        """Ask the wrapped adapter: what fits a node's buffer depends on the link."""
+
+        return self._inner.payload_limit(max_packet_bytes)
+
     def take_drops(self) -> tuple[TransportDrop, ...]:
         """Forward what the wrapped adapter discarded."""
 
