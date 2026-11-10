@@ -55,6 +55,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A configured command whose target is a `software`/`hardware` node no longer aborts
+  the run with `simulated module '<node>' is not available`. Two situations triggered it:
+  the testbed overhearing a real peer send that command to another real peer (on
+  SocketCAN, on a ZeroMQ hub, which shows every peer's traffic, or on the in-memory
+  bus), and `send_command` towards an external node on the in-memory bus, which hands
+  the testbed's own frame back to it. Such a command is now only observed: `--trace`
+  still names its route, and nothing is delivered because no model of ours owns the
+  target. A command to a simulated node is delivered exactly as before, and an ambiguous
+  route is still a hard error. The semantic payload of a command sent to an external
+  node is no longer kept in memory for the life of the runner.
 - KISS: a payload of 253-256 bytes passed config validation and the sender's size
   check, then failed mid-run with a raw `TransportError`, because the 4-byte CRC32
   shares the packet buffer with the payload. The limit is now `max_packet_bytes − 4`
