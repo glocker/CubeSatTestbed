@@ -602,7 +602,9 @@ class ScenarioRunner:
             ),
             route.payload_hex,
         )
-        if payload is not None:
+        # Only a simulated target ever receives the semantic payload back; for an external
+        # node nothing would pop the entry, so do not keep one.
+        if payload is not None and route.target_node in self.runtime.modules:
             self._semantic_payloads_by_envelope[envelope.sequence] = payload
         return envelope
 
@@ -772,6 +774,15 @@ class ScenarioRunner:
         packet: CspPacketView,
         envelope: TransportEnvelope,
     ) -> None:
+        if route.target_node not in self.runtime.modules:
+            # The target is a software/hardware node: a real peer handles this command,
+            # not a model of ours. Seeing it on the bus is observation -- the trace already
+            # names the route -- not a request to run something that does not exist, which
+            # is what happens when the testbed merely overhears two other nodes talking,
+            # or when the in-memory bus hands the testbed's own command back to it.
+            self._semantic_payloads_by_envelope.pop(envelope.sequence, None)
+            return
+
         module = self.runtime.module(route.target_node)
         if not isinstance(module, _CommandHandlingModule):
             raise ScenarioRuntimeError(f"module {route.target_node!r} cannot handle commands")

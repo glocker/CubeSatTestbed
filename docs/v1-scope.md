@@ -464,6 +464,12 @@ transport, whether that traffic comes from a real board, a real process on
 `vcan0`, on the other end of a serial line or on a ZeroMQ hub, or a scenario test
 manually placing frames on the in-memory bus.
 
+A configured command is delivered to a module only when its *target* is simulated.
+When the target is a `software`/`hardware` node, a real peer handles the command, so
+seeing it on the bus (the testbed's own `send_command` coming back on the in-memory
+bus, or two real nodes talking on a bus the testbed only watches) is observation: it is
+traced with its route and nothing else happens.
+
 By default, `wait()` uses `cubesat_testbed.clock.VirtualClock` and jumps
 straight to its target virtual time, exactly as before. Passing
 `clock=RealTimeClock()` to `run_scenario`/`run_scenario_files`/`build_runtime`
