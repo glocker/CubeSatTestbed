@@ -691,6 +691,22 @@ warning: transport.type='socketcan' (interface 'vcan0') without --realtime; virt
 Warnings go to `stderr`, so they compose with `--json`/`--quiet` without
 corrupting machine-readable `stdout`.
 
+#### Timestamps of frames from a real peer
+
+Virtual time advances only at scheduled instants: the 1 s physical step and any
+scenario events. A frame from a real peer that arrives *between* two of them is
+stamped with the earlier one. This applies to every frame on every transport and to
+everything derived from the stamp: the `t=` of its `--trace` line, of a `DROP` line
+and of a `dropped_packets` entry in `--json`. So with `--realtime` such a frame can
+read up to one physical step (1 s) earlier than it actually arrived; a bad frame
+written 1.4 s into a wait is reported at `t=1000000`. Within one run the stamps are
+consistent with each other (a frame and its drop share one), and order is preserved.
+
+This is deliberate: stamping arrivals from the wall clock would make traces depend
+on OS scheduling and weaken the guarantee that the same inputs give the same trace.
+With the default virtual clock nothing arrives mid-wait, so none of this applies.
+Treat `t=` on traffic from a real peer as "at or after this virtual instant".
+
 Note that virtual-time durations now cost real time: a scenario that waits
 `30s` takes 30 seconds under `--realtime`. Size scenario waits and assertion
 timeouts accordingly.
