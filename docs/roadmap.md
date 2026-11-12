@@ -19,10 +19,8 @@
 - [x] Generate and commit `vcan0` golden-vector fixtures plus sibling
       `*.meta.toml` files under `tests/golden_vectors/`.
 - [x] Add pytest fixture loader for golden vectors.
-- [x] Implement the CSP v2 single-frame codec against the fixed vectors.
-- [x] CFP2 fragmentation and reassembly (multi-frame golden vectors first).
-- [x] Serial KISS transport (KISS golden vectors first).
-- [x] ZeroMQ transport (ZeroMQ golden vectors first).
+- [x] Implement the CSP v2 codec against the fixed vectors, one CAN frame per
+      packet (multi-frame packets came after v1.1.0, see below).
 
 ### Phase 2: Core Engine & CLI
 
@@ -82,6 +80,21 @@ unblocked that user, highest first.
        [`docs/demo/`](demo/).
 8. [x] CI, PyPI, license and supported-Python badges on the README, landed
        alongside item 3.
+
+## Landed since v1.1.0 (unreleased)
+
+On `main`, not yet in a published release; see the `[Unreleased]` section of
+[`CHANGELOG.md`](../CHANGELOG.md). Each item had its golden vectors committed and
+verified in CI before any codec or adapter code.
+
+1. [x] **CFP2 fragmentation and reassembly.** A packet longer than one CAN frame is
+       sent as several frames and rebuilt at the receiver, as libcsp `v2.1` does,
+       instead of being rejected; per-node `max_packet_bytes`; every dropped packet
+       is reported, never silent.
+2. [x] **Serial KISS transport.** CSP v2 over a UART, USB-serial adapter or pty.
+3. [x] **ZeroMQ transport.** The testbed as a client of a libcsp `zmqproxy` hub, so
+       an unmodified libcsp process can exchange packets with a simulated node; needs
+       the optional `zmq` extra.
 
 ## Next
 

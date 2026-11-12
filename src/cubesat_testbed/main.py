@@ -55,9 +55,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "run",
         help="run a scenario against a setup config",
         description=(
-            "Run a YAML scenario against a TOML setup config, on the in-memory runtime by "
-            "default or against a real bus with --realtime. Pass --example NAME instead to "
-            "run one of the setups shipped with the package."
+            "Run a YAML scenario against a TOML setup config. The setup's transport decides "
+            "what it runs on: the in-memory bus (the default, fully simulated), SocketCAN, a "
+            "serial KISS line or a ZeroMQ hub for real peers. Add --realtime to pace virtual "
+            "time against wall-clock time so a real peer has time to answer. Pass --example "
+            "NAME instead to run one of the setups shipped with the package."
         ),
     )
     run_parser.add_argument(
