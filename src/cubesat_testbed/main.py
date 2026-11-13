@@ -200,7 +200,7 @@ def _run_command(args: argparse.Namespace) -> int:
         # transport/--realtime mismatch is a CLI-level warning and has to be raised
         # before the run starts. Both loads fail the same way, so a bad config still
         # reports one concise error and exit code 2.
-        _warn_on_unpaced_socketcan(load_testbed_config(config_path), realtime=args.realtime)
+        _warn_on_unpaced_transport(load_testbed_config(config_path), realtime=args.realtime)
         obc_rules = build_obc_rules_from_file(args.rules) if args.rules is not None else None
         result = run_scenario_files(
             config_path,
@@ -335,15 +335,16 @@ def _example_run_command(example: Example, directory: Path) -> str:
     )
 
 
-def _warn_on_unpaced_socketcan(setup: TestbedConfig, *, realtime: bool) -> None:
+def _warn_on_unpaced_transport(setup: TestbedConfig, *, realtime: bool) -> None:
     """Warn when a real bus or line is configured but virtual time is not paced against it.
 
     Without ``--realtime`` the run uses the default ``VirtualClock``, which jumps
     straight to the next scheduled virtual instant and so never gives a real
     ``software``/``hardware`` peer wall-clock time to answer. That is almost
-    always a mistake on a SocketCAN transport -- but not an error: a SocketCAN
-    setup whose nodes are all ``simulated`` still runs correctly unpaced, and so
-    does a run deliberately kept fast while a peer is not connected yet.
+    always a mistake on a SocketCAN, KISS or ZMQ transport -- but not an error: a
+    setup on one of them whose nodes are all ``simulated`` still runs correctly
+    unpaced, and so does a run deliberately kept fast while a peer is not
+    connected yet.
     """
 
     if realtime:
