@@ -28,6 +28,7 @@ from cubesat_testbed.examples import (
     available_examples,
     get_example,
 )
+from cubesat_testbed.report import RunRecorder, write_report
 from cubesat_testbed.scenario import (
     ScenarioRunResult,
     build_obc_rules_from_file,
@@ -124,6 +125,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_parser.add_argument(
+        "--html",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "write a self-contained HTML report of the run to PATH: assertions linked to the "
+            "frames they were judged on, the decoded frame timeline with filters, signal "
+            "plots over virtual time, dropped packets and the scenario steps. One offline "
+            "file, written even when the run aborts; composes with --json and --quiet"
+        ),
+    )
+    run_parser.add_argument(
         "--quiet",
         action="store_true",
         help="suppress normal stdout output; stderr warnings/errors are still emitted",
@@ -189,6 +201,7 @@ def _run_command(args: argparse.Namespace) -> int:
     suppress_assertion_output = bool(args.quiet or args.json)
     output = io.StringIO() if suppress_assertion_output else None
     clock: Clock | None = RealTimeClock() if args.realtime else None
+    recorder = RunRecorder() if args.html is not None else None
 
     started = time.perf_counter()
     try:
@@ -211,9 +224,17 @@ def _run_command(args: argparse.Namespace) -> int:
             # The trace goes to stderr precisely so it stays out of the way of
             # --json/--quiet stdout, which is why it ignores both flags.
             trace=sys.stderr if args.trace else None,
+            recorder=recorder,
         )
     except Exception as exc:  # noqa: BLE001
         # CLI contract: execution errors map to 2; assertion failures map to 1 via result.passed.
+        if recorder is not None and args.html is not None:
+            # A run that aborts is when the report is most wanted; it shows what was
+            # recorded up to the error. Failing to write it must not hide the real error.
+            try:
+                write_report(args.html, recorder, None, error=str(exc))
+            except OSError as write_error:
+                print(f"warning: could not write the HTML report: {write_error}", file=sys.stderr)
         if args.junit_xml is not None:
             _write_junit_error_xml(
                 args.junit_xml, str(exc), kind="execution_error", started=started
@@ -231,6 +252,20 @@ def _run_command(args: argparse.Namespace) -> int:
         args.junit_xml.write_text(
             format_junit_xml(result, wall_time_seconds=elapsed), encoding="utf-8"
         )
+
+    if recorder is not None and args.html is not None:
+        try:
+            write_report(args.html, recorder, result)
+        except OSError as exc:
+            _print_error(
+                f"could not write the HTML report to {args.html}: {exc}",
+                json_output=args.json,
+                exit_code=_EXIT_EXECUTION_ERROR,
+                kind="report_error",
+            )
+            return _EXIT_EXECUTION_ERROR
+        if not args.quiet:
+            print(f"html report written to {args.html}", file=sys.stderr)
 
     if not result.assertions:
         print("warning: 0 assertions in scenario", file=sys.stderr)
