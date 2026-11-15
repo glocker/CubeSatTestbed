@@ -84,7 +84,7 @@ unblocked that user, highest first.
 ## Landed since v1.1.0 (unreleased)
 
 On `main`, not yet in a published release; see the `[Unreleased]` section of
-[`CHANGELOG.md`](../CHANGELOG.md). Each item had its golden vectors committed and
+[`CHANGELOG.md`](../CHANGELOG.md). Items 1-3 had their golden vectors committed and
 verified in CI before any codec or adapter code.
 
 1. [x] **CFP2 fragmentation and reassembly.** A packet longer than one CAN frame is
@@ -95,6 +95,9 @@ verified in CI before any codec or adapter code.
 3. [x] **ZeroMQ transport.** The testbed as a client of a libcsp `zmqproxy` hub, so
        an unmodified libcsp process can exchange packets with a simulated node; needs
        the optional `zmq` extra.
+4. [x] **Self-contained HTML run report.** `run --html OUT.html` writes one offline
+       file with the assertions linked to the frames they were judged on, the decoded
+       frame timeline with filters, signal plots and dropped packets.
 
 ## Next
 

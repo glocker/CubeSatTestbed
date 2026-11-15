@@ -63,6 +63,7 @@ from cubesat_testbed.protocol.telemetry_codec import (
     decode_telemetry_value,
     encode_telemetry_value,
 )
+from cubesat_testbed.report.recorder import RunRecorder
 from cubesat_testbed.scenario.assertions import (
     AssertionResult,
     TelemetryAssertion,
@@ -192,6 +193,8 @@ class ScenarioRuntime:
     clock: Clock = field(default_factory=VirtualClock)
     trace: TextIO | None = None
     """Stream ``DROP`` lines are written to when ``--trace`` is on."""
+    recorder: RunRecorder | None = None
+    """Observer for the HTML report; never read back by the run."""
 
     def module(self, name: str) -> SimulatedModule:
         """Return a configured simulated module by node name."""
@@ -330,6 +333,7 @@ class ScenarioRunner:
         self._reassemblers: dict[int, CspReassembler] = {}
         self._senders: dict[int, PacketSender] = {}
         self._dropped_packets: list[DroppedPacket] = []
+        self._signal_evidence: dict[str, int | None] = {}
         self.runtime.engine.add_handler(EventKind.TELEMETRY, self._record_telemetry)
         self._arm_physical_step()
 
@@ -345,8 +349,13 @@ class ScenarioRunner:
         started_at = self.runtime.engine.now
         self._assertion_results = []
         self._dropped_packets = []
+        recorder = self.runtime.recorder
+        if recorder is not None:
+            recorder.begin(self.runtime.setup, scenario)
 
         for index, step in enumerate(scenario.steps, start=1):
+            if recorder is not None:
+                recorder.step(self.runtime.engine.now, index, step)
             if isinstance(step, WaitStep):
                 self.wait(step.virtual_time)
             elif isinstance(step, InjectFaultStep):
@@ -513,6 +522,8 @@ class ScenarioRunner:
             self.wait(next_stop - self.runtime.engine.now)
 
         self._assertion_results.append(result)
+        if self.runtime.recorder is not None:
+            self.runtime.recorder.assertion(result, self._signal_evidence.get(assertion.signal))
         print(format_assertion_result(result), file=self._output)
         self.runtime.engine.schedule_assertion(
             result.name, passed=result.passed, detail=result.detail
@@ -524,6 +535,10 @@ class ScenarioRunner:
         if not isinstance(event.payload, TelemetryPayload):
             raise ScenarioRuntimeError("telemetry events must carry a TelemetryPayload")
         self._latest_telemetry[event.payload.signal] = event.payload.value
+        if self.runtime.recorder is not None:
+            self.runtime.recorder.signal(
+                self.runtime.engine.now, event.payload.signal, event.payload.value
+            )
 
     def _arm_physical_step(self) -> None:
         """Schedule the recurring engine timer that drives ticks/cycles/telemetry.
@@ -744,6 +759,8 @@ class ScenarioRunner:
 
     def _append_drop(self, dropped: DroppedPacket) -> None:
         self._dropped_packets.append(dropped)
+        if self.runtime.recorder is not None:
+            self.runtime.recorder.drop(dropped)
         if self.runtime.trace is not None:
             self.runtime.trace.write(format_drop_trace_line(dropped) + "\n")
             self.runtime.trace.flush()
@@ -756,6 +773,12 @@ class ScenarioRunner:
 
         telemetry_route = self._telemetry_route_for_packet(packet)
         if telemetry_route is not None:
+            if self.runtime.recorder is not None:
+                # The frame this value is decoded from, for the report to link an
+                # assertion to; it only describes the run, nothing reads it back.
+                self._signal_evidence[telemetry_route.signal] = self.runtime.recorder.rx_frame_id(
+                    envelope
+                )
             self._deliver_telemetry(telemetry_route, packet)
             return
 
@@ -900,6 +923,7 @@ def build_runtime(
     obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None = None,
     clock: Clock | None = None,
     trace: TextIO | None = None,
+    recorder: RunRecorder | None = None,
 ) -> ScenarioRuntime:
     """Build a runtime from a validated setup config.
 
@@ -927,6 +951,10 @@ def build_runtime(
     transport in a :class:`~cubesat_testbed.transport.TracingTransportAdapter`
     and get one decoded line per frame crossing the bus. Purely observational:
     it changes neither scenario semantics nor determinism.
+
+    Pass ``recorder`` (a :class:`~cubesat_testbed.report.RunRecorder`) to record the
+    run for the HTML report. It rides on the same transport wrapper as ``trace`` and
+    is equally passive; either, both or neither may be given.
     """
 
     engine = DiscreteEventEngine()
@@ -942,7 +970,7 @@ def build_runtime(
         ),
         max_packet_bytes=max(node.max_packet_bytes for node in setup.nodes.values()),
     )
-    if trace is not None:
+    if trace is not None or recorder is not None:
         # Wrapping here, rather than tracing inside the runner, is what makes
         # frames an OBC Peer module sends straight to the transport visible too.
         transport = TracingTransportAdapter(
@@ -950,6 +978,7 @@ def build_runtime(
             stream=trace,
             now=lambda: engine.now,
             annotate=_build_frame_annotator(command_routes, telemetry_routes),
+            observer=None if recorder is None else recorder.observe_frame,
         )
 
     # Both the construction order and the per-tick order come from the module
@@ -1007,6 +1036,7 @@ def build_runtime(
         tick_order=tick_order,
         clock=VirtualClock() if clock is None else clock,
         trace=trace,
+        recorder=recorder,
     )
 
 
@@ -1036,6 +1066,7 @@ def run_scenario(
     obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None = None,
     clock: Clock | None = None,
     trace: TextIO | None = None,
+    recorder: RunRecorder | None = None,
 ) -> ScenarioRunResult:
     """Build a runtime (in-memory or SocketCAN, per setup) and run a scenario.
 
@@ -1048,7 +1079,7 @@ def run_scenario(
     the same stream as ``output``, which carries the assertion report.
     """
 
-    runtime = build_runtime(setup, obc_rules=obc_rules, clock=clock, trace=trace)
+    runtime = build_runtime(setup, obc_rules=obc_rules, clock=clock, trace=trace, recorder=recorder)
     try:
         return ScenarioRunner(runtime, output=output).run(scenario)
     finally:
@@ -1063,6 +1094,7 @@ def run_scenario_files(
     obc_rules: Mapping[str, Iterable[ObcPeerRule]] | None = None,
     clock: Clock | None = None,
     trace: TextIO | None = None,
+    recorder: RunRecorder | None = None,
 ) -> ScenarioRunResult:
     """Load setup/scenario files, validate references, and execute them."""
 
@@ -1075,6 +1107,7 @@ def run_scenario_files(
         obc_rules=obc_rules,
         clock=clock,
         trace=trace,
+        recorder=recorder,
     )
 
 

@@ -661,6 +661,58 @@ touch the assertion path, and enabling it does not change scenario results or
 determinism. From the Python API, pass a stream as `trace=` to `run_scenario`,
 `run_scenario_files` or `build_runtime`.
 
+### HTML report
+
+`--html PATH` writes one self-contained HTML file for the run, in addition to the
+normal output:
+
+```sh
+cubesat-testbed run --example default --html report.html
+```
+
+**What it contains.**
+
+- **Assertions.** Result, expected and actual value, when it was evaluated and an
+  *evidence* link: the frame (the last fragment, for a multi-frame packet) from which the
+  signal's latest value was decoded when the assertion was evaluated. For a passing
+  assertion that is the frame that satisfied it, for a failing one the frame whose value
+  did not match; a signal never seen on the bus says so and has no link. Failed
+  assertions are repeated in a list at the top.
+- **Setup.** The transport and every node (address, mode, module, `max_packet_bytes`).
+- **Signals.** A step plot of each numeric telemetry signal over virtual time, with a
+  line where an assertion on it was evaluated; a table of value changes for the others
+  (enumerations, booleans).
+- **Timeline.** Every frame that crossed the transport boundary, decoded exactly as
+  `--trace` prints it (both are rendered from the same `FrameRecord`), interleaved with
+  the scenario steps and the dropped packets. On the in-memory bus a frame appears twice,
+  `TX` when sent and `RX` when read back. Filters: direction, node, port, the three kinds
+  of row, and free text. A multi-frame packet shows every fragment, the earlier ones
+  dimmed, and the last one with the reassembled payload.
+
+**Properties.**
+
+- *Self-contained:* inline stylesheet, script and SVG; no font, image or network fetch.
+  Everything is readable with scripting off: only the filters need it, and the evidence
+  links are plain `#f<id>` anchors. Following one to a row a filter has hidden clears the
+  filters.
+- *Passive:* it is an observer on the same transport wrapper as `--trace`. It changes
+  neither scenario semantics, ordering nor determinism, and a run gives the same result
+  with and without it.
+- *Deterministic:* the file is a pure function of the run, with no wall-clock time, host
+  name, absolute path or random id, so the same inputs give the same bytes.
+- *Always written:* also when assertions fail (exit code 1) and when the run aborts
+  (exit code 2), the latter with the error and everything recorded up to it. If the file
+  cannot be written the run is an execution error (exit code 2).
+- *Composes* with `--json`, `--quiet` and `--trace`; the only extra output is a note on
+  `stderr` unless `--quiet`.
+
+The timestamps in it are the virtual ones described under
+[Timestamps of frames from a real peer](#timestamps-of-frames-from-a-real-peer).
+
+From Python, pass a `cubesat_testbed.report.RunRecorder` as `recorder=` to
+`run_scenario`, `run_scenario_files` or `build_runtime`, then
+`cubesat_testbed.report.write_report(path, recorder, result)`.
+
 ### Hardware-in-the-loop from the CLI
 
 `--realtime` runs the scenario on a `RealTimeClock` instead of the default

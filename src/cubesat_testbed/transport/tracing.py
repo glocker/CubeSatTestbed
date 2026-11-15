@@ -41,7 +41,8 @@ because unexpected traffic is often the reason a trace was turned on.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import TextIO
 
 from cubesat_testbed.protocol.csp_v2 import (
@@ -74,6 +75,56 @@ frame described by its header fields alone. Must not raise.
 VirtualTimeSource = Callable[[], int]
 """Return the current virtual time, in microseconds, for the trace timestamp."""
 
+
+@dataclass(frozen=True, slots=True)
+class FrameRecord:
+    """One frame as the trace sees it, decoded into fields instead of text.
+
+    The ``--trace`` line and the HTML report are both rendered from this, so what the
+    report shows is exactly what the trace would print. ``kind`` is ``"packet"`` for
+    a packet a link carries whole, ``"frame"`` for a CAN frame that is a whole packet,
+    ``"fragment"`` for one CAN frame of a multi-frame packet and ``"undecodable"``
+    for a frame the codec rejected. Header fields are ``None`` where the frame does
+    not carry them (a continuation fragment has only ``dst`` and ``sender``).
+    """
+
+    direction: str
+    kind: str
+    time: int | None = None
+    link: str | None = None
+    can_id: int | None = None
+    dlc: int | None = None
+    cfp: str | None = None
+    packet_count: int | None = None
+    frame_count: int | None = None
+    priority: int | None = None
+    source: int | None = None
+    destination: int | None = None
+    destination_port: int | None = None
+    source_port: int | None = None
+    flags: int | None = None
+    sender: int | None = None
+    data: bytes = b""
+    payload: bytes | None = None
+    frames: int | None = None
+    """Frames in the reassembled packet, set on the fragment that completes it."""
+    annotation: str | None = None
+    undecodable: str | None = None
+
+    @property
+    def has_header(self) -> bool:
+        """Whether the full CSP header (source, ports, flags) is known for this frame."""
+
+        return self.source is not None and self.destination_port is not None
+
+
+FrameObserver = Callable[[FrameRecord, TransportEnvelope], None]
+"""Called with every traced frame, after it has crossed the transport boundary.
+
+Observability only, like the trace itself: it must not raise and must not change
+delivery, ordering or virtual time.
+"""
+
 TRACE_PREFIX = "trace"
 """Leading token of every trace line, so a trace is greppable out of a log."""
 
@@ -83,21 +134,25 @@ class TracingTransportAdapter(TransportAdapter):
 
     ``stream`` receives one line per frame and should be ``stderr`` (or a file)
     rather than ``stdout``, so a trace composes with the CLI's machine-readable
-    ``--json`` output instead of corrupting it.
+    ``--json`` output instead of corrupting it. It may be ``None`` when only an
+    ``observer`` wants the frames (the HTML report): the frames are still decoded
+    the same way, there is just nowhere to print them.
     """
 
     def __init__(
         self,
         inner: TransportAdapter,
         *,
-        stream: TextIO,
+        stream: TextIO | None = None,
         now: VirtualTimeSource | None = None,
         annotate: FrameAnnotator | None = None,
+        observer: FrameObserver | None = None,
     ) -> None:
         self._inner = inner
         self._stream = stream
         self._now = now
         self._annotate = annotate
+        self._observer = observer
         self._reassemblers = {
             "TX": CspReassembler(max_packet_bytes=None),
             "RX": CspReassembler(max_packet_bytes=None),
@@ -160,17 +215,19 @@ class TracingTransportAdapter(TransportAdapter):
         self._inner.close()
 
     def _trace(self, direction: str, envelope: TransportEnvelope) -> None:
-        self._stream.write(
-            format_trace_line(
-                direction,
-                envelope,
-                now=self._now_value(),
-                annotate=self._annotate,
-                reassembler=self._reassemblers[direction],
-            )
+        record = describe_frame(
+            direction,
+            envelope,
+            now=self._now_value(),
+            annotate=self._annotate,
+            reassembler=self._reassemblers[direction],
         )
-        self._stream.write("\n")
-        self._stream.flush()
+        if self._stream is not None:
+            self._stream.write(format_frame_record(record))
+            self._stream.write("\n")
+            self._stream.flush()
+        if self._observer is not None:
+            self._observer(record, envelope)
 
     def _now_value(self) -> int | None:
         return None if self._now is None else self._now()
@@ -197,124 +254,172 @@ def format_trace_line(
     different debugging jobs.
     """
 
+    return format_frame_record(
+        describe_frame(direction, envelope, now=now, annotate=annotate, reassembler=reassembler)
+    )
+
+
+def describe_frame(
+    direction: str,
+    envelope: TransportEnvelope,
+    *,
+    now: int | None = None,
+    annotate: FrameAnnotator | None = None,
+    reassembler: CspReassembler | None = None,
+) -> FrameRecord:
+    """Decode one frame into a :class:`FrameRecord`; never raises on a bad frame."""
+
     frame = envelope.frame
-    parts = [TRACE_PREFIX]
-    if now is not None:
-        parts.append(f"t={now}")
-    parts.append(direction)
     if isinstance(frame, CspPacketFrame):
-        return _format_packet_line(parts, frame, annotate=annotate)
-    parts.append(f"can_id=0x{frame.can_id:08X}")
-    parts.append(f"dlc={frame.dlc}")
+        fields = frame.fields
+        return FrameRecord(
+            direction=direction,
+            kind="packet",
+            time=now,
+            link=frame.link or "local",
+            priority=fields.priority,
+            source=fields.source,
+            destination=fields.destination,
+            destination_port=fields.destination_port,
+            source_port=fields.source_port,
+            flags=fields.flags,
+            data=frame.wire,
+            payload=frame.payload,
+            annotation=None if annotate is None else annotate(frame),
+        )
 
     can_fields = decode_can_id(frame.can_id) if frame.is_extended_id else None
+    base = {
+        "direction": direction,
+        "time": now,
+        "can_id": frame.can_id,
+        "dlc": frame.dlc,
+        "data": frame.data,
+    }
     if can_fields is not None and not (can_fields.begin and can_fields.end):
-        return _format_fragment_line(
-            parts, frame, can_fields, now=now, annotate=annotate, reassembler=reassembler
+        return _describe_fragment(
+            frame, can_fields, base, now=now, annotate=annotate, reassembler=reassembler
         )
 
     try:
         packet = _decode_frame(frame)
     except CspV2CodecError as exc:
-        parts.append(f"data={_hex(frame.data)}")
-        parts.append(f"undecodable={str(exc)!r}")
-        return " ".join(parts)
+        return FrameRecord(kind="undecodable", undecodable=str(exc), **base)  # type: ignore[arg-type]
 
     fields = packet.fields
-    parts.extend(
-        (
-            f"pri={fields.priority}",
-            f"src={fields.source}",
-            f"dst={fields.destination}",
-            f"dport={fields.destination_port}",
-            f"sport={fields.source_port}",
-            f"flags=0x{fields.flags:02X}",
-            f"data={_hex(frame.data)}",
-            f"payload={_hex(packet.payload)}",
-        )
+    return FrameRecord(
+        kind="frame",
+        priority=fields.priority,
+        source=fields.source,
+        destination=fields.destination,
+        destination_port=fields.destination_port,
+        source_port=fields.source_port,
+        flags=fields.flags,
+        payload=packet.payload,
+        annotation=None if annotate is None else annotate(packet),
+        **base,  # type: ignore[arg-type]
     )
 
-    annotation = None if annotate is None else annotate(packet)
-    if annotation:
-        parts.append(annotation)
-    return " ".join(parts)
 
-
-def _format_packet_line(
-    parts: list[str],
-    frame: CspPacketFrame,
-    *,
-    annotate: FrameAnnotator | None,
-) -> str:
-    """Describe a packet that a link carries whole; see the module docstring."""
-
-    fields = frame.fields
-    parts.append(f"link={frame.link or 'local'}")
-    parts.extend(
-        (
-            f"pri={fields.priority}",
-            f"src={fields.source}",
-            f"dst={fields.destination}",
-            f"dport={fields.destination_port}",
-            f"sport={fields.source_port}",
-            f"flags=0x{fields.flags:02X}",
-            f"data={_hex(frame.wire)}",
-            f"payload={_hex(frame.payload)}",
-        )
-    )
-    annotation = None if annotate is None else annotate(frame)
-    if annotation:
-        parts.append(annotation)
-    return " ".join(parts)
-
-
-def _format_fragment_line(
-    parts: list[str],
+def _describe_fragment(
     frame: CspCanFrame,
     can_fields: CspCanIdFields,
+    base: Mapping[str, object],
     *,
     now: int | None,
     annotate: FrameAnnotator | None,
     reassembler: CspReassembler | None,
-) -> str:
+) -> FrameRecord:
     """Describe one frame of a multi-frame packet; see the module docstring."""
 
     position = "begin" if can_fields.begin else "end" if can_fields.end else "more"
-    parts.append(f"cfp={position}")
-    parts.append(f"pc={can_fields.packet_count}")
-    parts.append(f"fc={can_fields.frame_count}")
-
+    cfp = {
+        "cfp": position,
+        "packet_count": can_fields.packet_count,
+        "frame_count": can_fields.frame_count,
+    }
+    header: dict[str, object] = {}
     if can_fields.begin:
         try:
-            header = decode_first_frame_header(frame)
+            first = decode_first_frame_header(frame)
         except CspV2CodecError as exc:
-            parts.append(f"data={_hex(frame.data)}")
-            parts.append(f"undecodable={str(exc)!r}")
-            return " ".join(parts)
-        parts.extend(
-            (
-                f"pri={header.priority}",
-                f"src={header.source}",
-                f"dst={header.destination}",
-                f"dport={header.destination_port}",
-                f"sport={header.source_port}",
-                f"flags=0x{header.flags:02X}",
-            )
-        )
+            return FrameRecord(kind="undecodable", undecodable=str(exc), **base, **cfp)  # type: ignore[arg-type]
+        header = {
+            "priority": first.priority,
+            "source": first.source,
+            "destination": first.destination,
+            "destination_port": first.destination_port,
+            "source_port": first.source_port,
+            "flags": first.flags,
+        }
     else:
-        parts.append(f"dst={can_fields.destination}")
-        parts.append(f"sender={can_fields.sender}")
-    parts.append(f"data={_hex(frame.data)}")
+        header = {"destination": can_fields.destination, "sender": can_fields.sender}
 
+    frames: int | None = None
+    payload: bytes | None = None
+    annotation: str | None = None
     if reassembler is not None:
         for event in reassembler.feed(frame, now=0 if now is None else now):
             packet = event.packet
             if event.kind == "complete" and packet is not None:
-                parts.append(f"frames={packet.frame_count}")
-                parts.append(f"payload={_hex(packet.payload)}")
+                frames = packet.frame_count
+                payload = packet.payload
                 annotation = None if annotate is None else annotate(packet)
-                if annotation:
-                    parts.append(annotation)
+    return FrameRecord(
+        kind="fragment",
+        frames=frames,
+        payload=payload,
+        annotation=annotation,
+        **base,  # type: ignore[arg-type]
+        **cfp,  # type: ignore[arg-type]
+        **header,  # type: ignore[arg-type]
+    )
+
+
+def format_frame_record(record: FrameRecord) -> str:
+    """Render a :class:`FrameRecord` as the single ``key=value`` ``--trace`` line."""
+
+    parts = [TRACE_PREFIX]
+    if record.time is not None:
+        parts.append(f"t={record.time}")
+    parts.append(record.direction)
+
+    if record.kind == "packet":
+        parts.append(f"link={record.link}")
+    else:
+        parts.append(f"can_id=0x{record.can_id:08X}")
+        parts.append(f"dlc={record.dlc}")
+    if record.cfp is not None:
+        parts.append(f"cfp={record.cfp}")
+        parts.append(f"pc={record.packet_count}")
+        parts.append(f"fc={record.frame_count}")
+
+    if record.kind == "undecodable":
+        parts.append(f"data={_hex(record.data)}")
+        parts.append(f"undecodable={record.undecodable!r}")
+        return " ".join(parts)
+
+    if record.has_header:
+        parts.extend(
+            (
+                f"pri={record.priority}",
+                f"src={record.source}",
+                f"dst={record.destination}",
+                f"dport={record.destination_port}",
+                f"sport={record.source_port}",
+                f"flags=0x{record.flags:02X}",
+            )
+        )
+    else:  # a continuation fragment knows only where it is going and who sent it
+        parts.append(f"dst={record.destination}")
+        parts.append(f"sender={record.sender}")
+    parts.append(f"data={_hex(record.data)}")
+    if record.frames is not None:
+        parts.append(f"frames={record.frames}")
+    if record.payload is not None:
+        parts.append(f"payload={_hex(record.payload)}")
+    if record.annotation:
+        parts.append(record.annotation)
     return " ".join(parts)
 
 
@@ -327,7 +432,11 @@ def _hex(data: bytes) -> str:
 __all__ = [
     "TRACE_PREFIX",
     "FrameAnnotator",
+    "FrameObserver",
+    "FrameRecord",
     "TracingTransportAdapter",
     "VirtualTimeSource",
+    "describe_frame",
+    "format_frame_record",
     "format_trace_line",
 ]

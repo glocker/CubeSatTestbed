@@ -253,6 +253,29 @@ it, not a parallel report. It goes to `stderr`, so it composes with `--json`
 and `--quiet`, and it works on SocketCAN too, where it is the only way to see
 what your testbed actually put on the wire.
 
+**8. A report you can attach to a CI run**
+
+Add `--html report.html` and the run also writes one self-contained HTML file:
+
+```sh
+cubesat-testbed run --example default --html report.html
+```
+
+It needs nothing to open (no server, no network, no installed testbed) and shows what
+`--trace` shows, in a form you can send to a colleague or keep as a CI artifact:
+
+- the **assertions**, each linked to the frame its value was decoded from, so a failing
+  assertion takes you straight to the frame that carried the wrong value;
+- the **frame timeline**, decoded as in the trace, interleaved with the scenario steps
+  and any dropped packets, with filters by direction, node, port and text;
+- **plots** of every numeric signal over virtual time, with the assertions marked on them;
+- the setup (transport and nodes) and, if the run aborted, the error and everything
+  recorded up to it.
+
+It is written even when assertions fail or the run aborts, and it composes with
+`--json`, `--quiet` and `--trace`. The file contains no wall-clock time, so the same run
+produces the same bytes.
+
 ## Hardware in the loop
 
 Point the same scenario at a real bus: switch the node under test to
@@ -300,8 +323,9 @@ sudo ip link set up vcan0
   USB-serial or a pty) and ZeroMQ (a libcsp `zmqproxy` hub; needs the `zmq`
   extra: `pip install 'cubesat-testbed[zmq]'`).
 - Deterministic virtual-time engine, TOML setup + YAML scenarios, PASS/FAIL
-  CLI report with CI-friendly exit codes, JUnit XML output and a decoded
-  wire-level frame trace (`--trace`).
+  CLI report with CI-friendly exit codes, JUnit XML output, a decoded
+  wire-level frame trace (`--trace`) and a self-contained HTML report
+  (`--html`).
 
 Full detail, constraints, and what's deliberately out of scope for v1:
 [`docs/v1-scope.md`](docs/v1-scope.md).

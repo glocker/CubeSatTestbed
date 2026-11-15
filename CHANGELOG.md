@@ -46,12 +46,28 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   [`docs/v1-scope.md`](docs/v1-scope.md#zeromq-transport).
 - The whole-packet links (KISS, ZMQ) share one routing and delivery implementation
   (`transport/whole_packet.py`); KISS behaviour is unchanged.
+- `run --html PATH`: a self-contained HTML report of the run, as one offline file for a CI
+  artifact or a colleague. It links each assertion to the frame its value was decoded
+  from (a failing assertion leads straight to the frame that carried the wrong value),
+  shows the decoded frame timeline with the scenario steps and dropped packets and filters
+  by direction, node, port and text, and plots every numeric signal over virtual time with
+  the assertions marked. It needs no server and no network, is readable with scripting
+  off, is written even when assertions fail or the run aborts, composes with `--json`,
+  `--quiet` and `--trace`, and is byte-identical for the same run. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#html-report).
 - `--trace` shows a whole-packet frame as one line (`link=serial|zmq|local`).
 - `run` warns on stderr, as for SocketCAN, when a `kiss` or `zmq` transport is used
   without `--realtime`.
 - `TransportAdapter.new_sender()` and `take_drops()`: how a packet becomes frames, and
   what a link discarded, are now the transport's business, so the runner and OBC
   Peer work unchanged over CAN and serial.
+
+### Changed (internal)
+
+- The `--trace` line is now rendered from a structured `FrameRecord`
+  (`transport.tracing.describe_frame` / `format_frame_record`) instead of being built as
+  text directly; the output is unchanged. `TracingTransportAdapter` takes an optional
+  `observer`, and its `stream` is now optional.
 
 ### Fixed
 

@@ -24,6 +24,8 @@ src/cubesat_testbed/
   transport/kiss.py       # serial KISS adapter (whole CSP packets, local delivery)
   transport/serial_line.py # termios serial line (tty or pty), standard library only
   transport/whole_packet.py # routing shared by the whole-packet links (KISS, ZMQ)
+  report/recorder.py      # observer that records a run for the HTML report
+  report/html_report.py   # renders the recording as one self-contained HTML file
   transport/zmq.py        # ZeroMQ adapter: a client of a libcsp zmqproxy hub
   transport/zmq_link.py   # pyzmq PUB/SUB connection (optional `zmq` extra)
   protocol/csp_v2_packet.py # whole-packet frame and 6-byte header shared by KISS and ZMQ
