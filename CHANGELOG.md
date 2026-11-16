@@ -61,6 +61,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - `TransportAdapter.new_sender()` and `take_drops()`: how a packet becomes frames, and
   what a link discarded, are now the transport's business, so the runner and OBC
   Peer work unchanged over CAN and serial.
+- Bus fault injection. Faults used to stop at the module boundary; now the in-memory
+  bus can fail too. `[bus_faults]` in the setup (a `seed` and `[[bus_faults.rules]]`) and
+  `inject_bus_fault` scenario steps apply `drop`, `delay`, `corrupt`, `duplicate` and
+  `reorder` rules to CAN frames, on send (`direction = "tx"`) or on receive (`"rx"`),
+  selected by `port`, `source_port`, `source`, `destination` and the `nth` matching
+  frame (with `count`) or a `probability`. A rule on a port reaches every fragment of a
+  multi-frame packet, so `nth` can drop exactly one fragment and the receiver reports
+  the loss as `frame_lost`/`timeout`. Delays are virtual-time events; every random
+  choice comes from a generator seeded from `seed` and the rule's position, so the same
+  seed gives a byte-identical `--trace`. Every injected fault is reported: `FAULT`
+  lines in `--trace` (right after the `TX` line of the frame concerned) and in the text
+  output, `bus_faults` and `bus_fault_seed` in `--json` and on the run result, rows in
+  the HTML report. In-memory transport only: the setup is rejected on `socketcan`, `kiss`
+  and `zmq`, which run on wall-clock time. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#bus-faults).
 
 ### Changed (internal)
 
@@ -91,6 +106,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- A telemetry payload the signal's codec cannot read (an enum value with no label, say a
+  byte a bus fault corrupted) is now a reported dropped packet (`reason=undecodable`,
+  in `--trace`, the text output, `--json` and the HTML report) and the run goes on, instead
+  of ending with an execution error.
 - A command `payload_hex` or telemetry layout longer than 4 bytes is accepted;
   the former 4-byte limit is replaced by the sending node's `max_packet_bytes`.
 - `ObcPeerNamedCommand.encode()` returns the tuple of frames carrying the command

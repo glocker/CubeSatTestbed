@@ -132,6 +132,92 @@ setup against several different FDIR rule sets without editing it. A rules
 file reuses the exact same schema, keyed by node name at the top level (see
 [`configs/schema/module_schema.md`](../configs/schema/module_schema.md#obc-peer-rules)).
 
+### Bus faults
+
+`FaultInjectionEngine` breaks a *module*. Bus faults break the *bus*: the in-memory
+transport is wrapped in a decorator (`transport/faults.py`,
+`FaultInjectingTransport`) that applies explicit rules to the CAN frames passing
+through it. It is passive like the engine above: it decides nothing, it applies the
+rules it was given. A rule says which frames, when, and what happens:
+
+```toml
+[bus_faults]
+seed = 42                 # every random choice derives from this; default 0
+
+[[bus_faults.rules]]
+type = "drop"             # drop | delay | corrupt | duplicate | reorder
+port = 10                 # destination port; also source_port, source, destination
+nth = 2                   # the 2nd matching frame (1-based)
+```
+
+The same fields work as a scenario step, which puts the rule in force from that
+instant on and starts counting `nth` from there:
+
+```yaml
+- action: inject_bus_fault
+  type: delay
+  port: 20
+  nth: 1
+  delay: 300ms
+```
+
+| field | meaning |
+| --- | --- |
+| `type` | `drop` loses the frame; `delay` holds it for `delay` of virtual time; `corrupt` XORs `mask` (default `0xFF`) into data byte `byte` (default: one drawn from the seed); `duplicate` delivers it twice; `reorder` holds it until the next frame in that direction has gone by, or for `hold` (default `1s`) if none comes |
+| `direction` | `tx` (default) acts when a node sends, before the frame reaches the bus; `rx` acts on what the receiver reads off it. Write two rules for both |
+| `port`, `source_port`, `source`, `destination` | selectors; a frame must match all that are given. `port` is the CSP destination port |
+| `nth`, `count` | fire on the `nth` matching frame and the next `count - 1` (default 1). Without `nth` the rule fires on every matching frame, at most `count` times if given |
+| `probability` | fire on each matching frame with this probability, drawn from the seeded generator; not combinable with `nth` |
+| `name` | label in the trace and the result; default `<type>-<position>` |
+
+Things worth knowing:
+
+- **Frames, not packets.** A multi-frame packet is several frames, so `nth` can drop
+  exactly one fragment. Only a packet's first frame carries its ports and source
+  address, so the decorator remembers each first frame's header and matches the
+  continuation fragments by the packet they belong to; a rule on `port = 10` therefore
+  reaches every fragment of a packet to port 10. The receiver then reports the loss
+  like any other (`frame_lost`, `timeout`, ...), as dropped packets.
+- **`byte` indexes the frame's CAN data field**, as `--trace` prints it in `data=`
+  (the first frame's first four bytes are the CSP header). Flipping a header byte
+  can make the frame unroutable or undecodable, which the trace then says. A `byte`
+  past the end of a short frame corrupts nothing; the fault is still reported, with
+  `skipped` in its detail.
+- **One rule per frame.** Rules are tried in the order they were added (setup first,
+  then scenario steps); the first one that fires acts, and a rule counts only the
+  frames that reached it.
+- **Delay is virtual.** A held frame is released by a scheduled event at its
+  virtual time and delivered in that same instant; nothing sleeps.
+- **Determinism.** Each rule has its own generator, seeded from `seed` and the rule's
+  position, and nothing reads the wall clock, so the same seed, rules and scenario
+  give a byte-identical `--trace`. Adding a rule does not change the draws of the
+  others. The seed is part of the result (`bus_fault_seed`).
+- **Visible.** `--trace` prints a `FAULT` line right after the `TX` line of the frame
+  it concerns (an `rx` fault, which has no such line, is printed where it happens):
+
+  ```text
+  trace t=3000000 TX can_id=0x10006083 dlc=5 pri=2 src=1 dst=3 dport=10 ... command obc.payload_power_off->payload
+  trace FAULT t=3000000 rule=drop-1 action=drop dir=TX match=1 can_id=0x10006083 src=1 dst=3 dport=10 sport=10 data=0004a28000
+  ```
+
+  A `delay` fault carries `until=<virtual time>`, a `corrupt` fault the byte, mask and
+  before/after values, a `reorder` fault its `hold`. The same events are `FAULT` lines
+  in the text output, `bus_faults`/`bus_fault_seed` in `--json`, rows in the HTML
+  report, and `bus_faults` on the run result.
+- **What `TX` and `RX` mean once rules exist.** The tracing adapter sits above the
+  decorator, so `TX` is a frame a node *tried* to send and `RX` a frame that
+  *reached* the receiver. A dropped frame is a `TX` with a `FAULT drop` and no `RX`;
+  a duplicated one is one `TX` and two `RX`.
+- **`rx` faults act on the bus monitor stream**, which is where the runner decodes
+  every frame for every node; per-endpoint streams pass through unchanged.
+
+**In-memory transport only.** A real bus, a serial line and a ZeroMQ hub deliver on
+wall-clock time, so a delay or an ordering there could not be reproduced from a seed,
+and a fault can only touch what the testbed itself sends or reads, not traffic between
+two real devices. `[bus_faults]` and `inject_bus_fault` are therefore rejected when
+the setup's transport is not `in-memory`. The decorator is always present on the
+in-memory bus and is a plain pass-through until a rule exists.
+
 ## Config and scenario files
 
 Static CubeSat/testbed setup uses TOML; scenario scripts use YAML. Both are
@@ -234,8 +320,9 @@ A receiving node discards a packet, as libcsp does, when a frame is missing or
 out of order (`frame_lost`), the packet outgrows the node's limit (`overflow`),
 a continuation frame has no packet in progress (`orphan_fragment`), a new first
 frame arrives mid-packet (`restarted`), the frame or header is invalid
-(`malformed`), or no frame arrives for one virtual second (`timeout`). Nothing is
-discarded silently:
+(`malformed`), or no frame arrives for one virtual second (`timeout`). A complete
+packet whose telemetry payload the signal's codec cannot read (a value with no enum
+label, a corrupted byte) is discarded as `undecodable`. Nothing is discarded silently:
 
 - `run` prints a `DROP t=... node=... reason=... detail=...` line per dropped
   packet before the summary (`SUMMARY` gains `dropped_packets=N`);
@@ -651,6 +738,9 @@ consequences worth knowing:
   decodes it. That round trip is precisely what makes an assertion an
   observation of the wire rather than of module state (see
   [Telemetry wire encoding](#telemetry-wire-encoding)).
+- With bus fault rules in force, `TX` means a frame a node tried to send and `RX`
+  one that reached the receiver; injected faults are `FAULT` lines between them
+  (see [Bus faults](#bus-faults)).
 - On SocketCAN the adapter does not receive its own messages, so outgoing
   frames appear only as `TX` and everything the peer sends appears as `RX`.
   This is the only place an outgoing HIL command is visible at all.

@@ -20,6 +20,7 @@ src/cubesat_testbed/
   transport/base.py       # Bus adapter interface
   transport/factory.py    # Config-to-adapter construction
   transport/in_memory.py  # CI/local in-memory bus
+  transport/faults.py     # bus fault decorator: drop/delay/corrupt/duplicate/reorder frames
   transport/socketcan.py  # Linux SocketCAN adapter
   transport/kiss.py       # serial KISS adapter (whole CSP packets, local delivery)
   transport/serial_line.py # termios serial line (tty or pty), standard library only
@@ -124,6 +125,13 @@ the next event time instead of spinning in idle loops.
 - `state_override` targets `.model.` paths and changes internal model state.
 - `signal_override` targets `.telemetry.` paths and spoofs outgoing telemetry.
 - `named_fault` activates a module-defined fault flag.
+
+`FaultInjectingTransport` (`transport/faults.py`) is the same kind of passive
+executor one level down: it breaks the *bus* instead of a module, applying explicit
+`[bus_faults]` rules and `inject_bus_fault` steps to the frames of the in-memory
+transport (drop the Nth frame on a port, delay, corrupt, duplicate, reorder). Its
+randomness is seeded and its delays are virtual-time events. See
+[Bus faults](v1-scope.md#bus-faults).
 
 The OBC Peer is the active decision maker. It listens to telemetry and applies
 rules such as:

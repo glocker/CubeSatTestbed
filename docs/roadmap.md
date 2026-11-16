@@ -98,6 +98,11 @@ verified in CI before any codec or adapter code.
 4. [x] **Self-contained HTML run report.** `run --html OUT.html` writes one offline
        file with the assertions linked to the frames they were judged on, the decoded
        frame timeline with filters, signal plots and dropped packets.
+5. [x] **Bus fault injection.** Faults no longer stop at the module boundary: on the
+       in-memory bus a scenario can drop the Nth frame on a port, delay a frame by a
+       virtual duration, flip a byte, duplicate a frame or deliver it after the next
+       one, on send or on receive, with a seed. Two runs with one seed give
+       byte-identical traces and `--trace` marks every injected fault.
 
 ## Next
 
