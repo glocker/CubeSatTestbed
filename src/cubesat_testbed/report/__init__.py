@@ -4,6 +4,7 @@ from cubesat_testbed.report.html_report import render_report, write_report
 from cubesat_testbed.report.recorder import (
     RecordedAssertion,
     RecordedDrop,
+    RecordedFault,
     RecordedFrame,
     RecordedStep,
     RunRecorder,
@@ -14,6 +15,7 @@ from cubesat_testbed.report.recorder import (
 __all__ = [
     "RecordedAssertion",
     "RecordedDrop",
+    "RecordedFault",
     "RecordedFrame",
     "RecordedStep",
     "RunRecorder",

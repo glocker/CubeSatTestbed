@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 import warnings
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, TextIO, runtime_checkable
@@ -20,6 +20,7 @@ from cubesat_testbed.config import (
     AssertionOperator,
     AssertStep,
     FaultType,
+    InjectBusFaultStep,
     InjectFaultStep,
     InMemoryTransportConfig,
     ScenarioScript,
@@ -72,11 +73,17 @@ from cubesat_testbed.scenario.assertions import (
 from cubesat_testbed.transport import (
     EndpointId,
     FrameAnnotator,
+    InMemoryBusAdapter,
     PacketSender,
     TracingTransportAdapter,
     TransportAdapter,
     TransportEnvelope,
     build_transport_adapter,
+)
+from cubesat_testbed.transport.faults import (
+    BusFaultEvent,
+    FaultInjectingTransport,
+    format_bus_fault_trace_line,
 )
 from cubesat_testbed.transport.tracing import TRACE_PREFIX
 
@@ -195,6 +202,8 @@ class ScenarioRuntime:
     """Stream ``DROP`` lines are written to when ``--trace`` is on."""
     recorder: RunRecorder | None = None
     """Observer for the HTML report; never read back by the run."""
+    bus_faults: FaultInjectingTransport | None = None
+    """The bus fault injector, present on the in-memory bus (and only there)."""
 
     def module(self, name: str) -> SimulatedModule:
         """Return a configured simulated module by node name."""
@@ -232,6 +241,10 @@ class ScenarioRunResult:
     finished_at: VirtualTime
     assertions: tuple[AssertionResult, ...]
     dropped_packets: tuple[DroppedPacket, ...] = ()
+    bus_faults: tuple[BusFaultEvent, ...] = ()
+    """Every fault the bus injected, in order; the bus never fails silently."""
+    bus_fault_seed: int | None = None
+    """The seed the injected faults derive from; ``None`` when no bus fault rule existed."""
 
     @property
     def passed(self) -> bool:
@@ -335,6 +348,9 @@ class ScenarioRunner:
         self._dropped_packets: list[DroppedPacket] = []
         self._signal_evidence: dict[str, int | None] = {}
         self.runtime.engine.add_handler(EventKind.TELEMETRY, self._record_telemetry)
+        if runtime.bus_faults is not None:
+            # A frame the bus held back is delivered in the instant it is released.
+            runtime.bus_faults.set_release_hook(self._run_current_events)
         self._arm_physical_step()
 
     @property
@@ -349,6 +365,8 @@ class ScenarioRunner:
         started_at = self.runtime.engine.now
         self._assertion_results = []
         self._dropped_packets = []
+        bus_faults = self.runtime.bus_faults
+        first_bus_fault = 0 if bus_faults is None else len(bus_faults.events)
         recorder = self.runtime.recorder
         if recorder is not None:
             recorder.begin(self.runtime.setup, scenario)
@@ -360,6 +378,8 @@ class ScenarioRunner:
                 self.wait(step.virtual_time)
             elif isinstance(step, InjectFaultStep):
                 self.inject_fault(step)
+            elif isinstance(step, InjectBusFaultStep):
+                self.inject_bus_fault(step)
             elif isinstance(step, SendCommandStep):
                 self.send_command(step)
             elif isinstance(step, AssertStep):
@@ -376,6 +396,10 @@ class ScenarioRunner:
             finished_at=self.runtime.engine.now,
             assertions=tuple(self._assertion_results),
             dropped_packets=tuple(self._dropped_packets),
+            bus_faults=() if bus_faults is None else bus_faults.events[first_bus_fault:],
+            bus_fault_seed=(
+                bus_faults.seed if bus_faults is not None and bus_faults.has_rules else None
+            ),
         )
 
     def wait(self, virtual_time: VirtualTime) -> None:
@@ -454,6 +478,15 @@ class ScenarioRunner:
         )
         self._run_current_events()
         self._emit_configured_telemetry()
+
+    def inject_bus_fault(self, step: InjectBusFaultStep) -> None:
+        """Put one bus fault rule in force on the in-memory bus, from this instant on."""
+
+        if self.runtime.bus_faults is None:
+            raise ScenarioRuntimeError(
+                "inject_bus_fault needs the in-memory bus; this runtime has no bus fault injector"
+            )
+        self.runtime.bus_faults.add_rule(step)
 
     def send_command(self, step: SendCommandStep) -> None:
         """Send one configured named command through the in-memory CSP path."""
@@ -714,6 +747,12 @@ class ScenarioRunner:
     def _collect_transport_drops(self) -> None:
         """Record what the transport itself rejected (a serial link's bad frames)."""
 
+        if self.runtime.bus_faults is not None:
+            # A frame a bus fault dropped will never be delivered back, so whatever was
+            # kept for it (a command's semantic payload) would otherwise live forever.
+            for sequence in self.runtime.bus_faults.take_lost_sequences():
+                self._semantic_payloads_by_envelope.pop(sequence, None)
+
         for drop in self.runtime.transport.take_drops():
             self._append_drop(
                 DroppedPacket(
@@ -828,7 +867,23 @@ class ScenarioRunner:
             )
 
     def _deliver_telemetry(self, route: _TelemetryRoute, packet: CspPacketView) -> None:
-        value = decode_telemetry_value(route.field_name, route.mapping, packet.payload)
+        try:
+            value = decode_telemetry_value(route.field_name, route.mapping, packet.payload)
+        except TelemetryCodecError as exc:
+            # A payload the signal's codec cannot read (a value with no enum label, a
+            # corrupted byte) is a packet the receiver discards, reported like any other
+            # drop; it does not end the run, whose assertions then judge what the bus
+            # actually delivered.
+            self._append_drop(
+                DroppedPacket(
+                    time=self.runtime.engine.now,
+                    destination=packet.fields.destination,
+                    sender=packet.fields.source,
+                    reason="undecodable",
+                    detail=f"{route.signal}: {exc}",
+                )
+            )
+            return
         self.runtime.engine.schedule_telemetry(route.signal, value, source=route.node_name)
 
     def _resolve_command_route(self, step: SendCommandStep) -> _CommandRoute:
@@ -970,16 +1025,33 @@ def build_runtime(
         ),
         max_packet_bytes=max(node.max_packet_bytes for node in setup.nodes.values()),
     )
+    bus_faults: FaultInjectingTransport | None = None
+    if isinstance(transport, InMemoryBusAdapter):
+        # Always present on the in-memory bus, and a plain pass-through until a rule is
+        # added, so a scenario can add one mid-run without the runtime knowing in advance.
+        bus_faults = FaultInjectingTransport(
+            transport,
+            now=lambda: engine.now,
+            schedule=_scheduler_for(engine),
+            seed=0 if setup.bus_faults is None else setup.bus_faults.seed,
+        )
+        if setup.bus_faults is not None:
+            for fault_rule in setup.bus_faults.rules:
+                bus_faults.add_rule(fault_rule)
+        transport = bus_faults
     if trace is not None or recorder is not None:
         # Wrapping here, rather than tracing inside the runner, is what makes
         # frames an OBC Peer module sends straight to the transport visible too.
-        transport = TracingTransportAdapter(
+        tracing = TracingTransportAdapter(
             transport,
             stream=trace,
             now=lambda: engine.now,
             annotate=_build_frame_annotator(command_routes, telemetry_routes),
             observer=None if recorder is None else recorder.observe_frame,
         )
+        transport = tracing
+        if bus_faults is not None:
+            bus_faults.set_event_handler(_bus_fault_reporter(tracing, trace, recorder))
 
     # Both the construction order and the per-tick order come from the module
     # registry, so a module type this package has never heard of takes part in
@@ -1037,7 +1109,46 @@ def build_runtime(
         clock=VirtualClock() if clock is None else clock,
         trace=trace,
         recorder=recorder,
+        bus_faults=bus_faults,
     )
+
+
+def _scheduler_for(engine: DiscreteEventEngine) -> Callable[[int, Callable[[], None]], None]:
+    """Let the bus fault injector run a callback after a virtual delay, as an engine event."""
+
+    def schedule(delay: int, action: Callable[[], None]) -> None:
+        engine.schedule_timer(delay, handler=lambda _event, _engine: action())
+
+    return schedule
+
+
+def _bus_fault_reporter(
+    tracing: TracingTransportAdapter,
+    trace: TextIO | None,
+    recorder: RunRecorder | None,
+) -> Callable[[BusFaultEvent], None]:
+    """Report each injected fault to the trace and the HTML recorder.
+
+    A fault on the send side happens while the frame is still being sent, before the
+    tracing adapter has traced it, so it is deferred until the frame has been: the
+    trace reads ``TX`` first and ``FAULT`` after. A fault on the receive side has no
+    such line to wait for and is reported at once.
+    """
+
+    def report(event: BusFaultEvent) -> None:
+        def emit() -> None:
+            if trace is not None:
+                trace.write(format_bus_fault_trace_line(event) + "\n")
+                trace.flush()
+            if recorder is not None:
+                recorder.fault(event)
+
+        if event.direction == "TX":
+            tracing.after_frame(emit)
+        else:
+            emit()
+
+    return report
 
 
 def build_in_memory_runtime(

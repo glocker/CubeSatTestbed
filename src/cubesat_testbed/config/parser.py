@@ -504,6 +504,87 @@ class NodeConfig(BaseModel):
             raise ValueError(f"invalid params for module_type {self.module_type!r}: {exc}") from exc
 
 
+BusFaultType: TypeAlias = Literal["drop", "delay", "corrupt", "duplicate", "reorder"]
+
+BUS_FAULT_DEFAULT_HOLD_US = 1_000_000
+"""How long a ``reorder`` rule holds a frame back at most, in virtual microseconds."""
+
+
+class BusFaultRule(BaseModel):
+    """One explicit fault the in-memory bus applies to the frames passing through it.
+
+    A rule says *which* frames (``direction`` plus optional ``port``/``source_port``/
+    ``source``/``destination`` selectors), *when* (``nth``/``count``/``probability``)
+    and *what happens* (``type``). It is passive data: the bus applies it, nothing
+    here decides anything. ``port`` is the CSP destination port; every fragment of a
+    multi-frame packet is matched by the header of the packet it belongs to.
+
+    ``nth`` is 1-based and counts the frames that matched this rule's selectors and
+    reached it; the rule fires on that frame and on the next ``count - 1`` (default
+    1). Without ``nth`` it fires on every matching frame (at most ``count`` times if
+    given), or on each with ``probability`` drawn from the run's seeded generator.
+    """
+
+    model_config = _SCHEMA_MODEL_CONFIG
+
+    type: BusFaultType
+    name: str | None = None
+    direction: Literal["tx", "rx"] = "tx"
+    port: CspPort | None = None
+    source_port: CspPort | None = None
+    source: CspAddress | None = None
+    destination: CspAddress | None = None
+    nth: int | None = Field(default=None, ge=1, strict=True)
+    count: int | None = Field(default=None, ge=1, strict=True)
+    probability: float | None = Field(default=None, gt=0.0, le=1.0)
+    delay: VirtualDuration | None = None
+    hold: VirtualDuration | None = None
+    byte: int | None = Field(default=None, ge=0, strict=True)
+    mask: int | None = Field(default=None, ge=1, le=255, strict=True)
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_identifier("bus fault name", value)
+
+    @model_validator(mode="after")
+    def _validate_rule(self) -> Self:
+        if self.nth is not None and self.probability is not None:
+            raise ValueError("a bus fault rule takes either nth or probability, not both")
+        if self.type == "delay":
+            if self.delay is None or self.delay <= 0:
+                raise ValueError("a delay bus fault needs a positive delay, for example '200ms'")
+        elif self.delay is not None:
+            raise ValueError(f"delay is only valid for a delay bus fault, not {self.type!r}")
+        if self.hold is not None:
+            if self.type != "reorder":
+                raise ValueError(f"hold is only valid for a reorder bus fault, not {self.type!r}")
+            if self.hold <= 0:
+                raise ValueError("hold must be positive")
+        if self.type != "corrupt" and (self.byte is not None or self.mask is not None):
+            raise ValueError(
+                f"byte and mask are only valid for a corrupt bus fault, not {self.type!r}"
+            )
+        return self
+
+
+class BusFaultsConfig(BaseModel):
+    """``[bus_faults]``: the seed and the rules in force from the start of the run.
+
+    Every random choice (``probability``, the byte a ``corrupt`` rule picks when it
+    names none) is drawn from a generator seeded from ``seed`` and the rule's
+    position, never from wall-clock time, so the same seed reproduces the same run.
+    Scenario ``inject_bus_fault`` steps add rules after these ones.
+    """
+
+    model_config = _SCHEMA_MODEL_CONFIG
+
+    seed: int = Field(default=0, ge=0, strict=True)
+    rules: tuple[BusFaultRule, ...] = ()
+
+
 class TestbedConfig(BaseModel):
     """Validated static satellite/testbed setup loaded from TOML."""
 
@@ -511,12 +592,14 @@ class TestbedConfig(BaseModel):
 
     transport: TransportConfig
     nodes: dict[str, NodeConfig] = Field(min_length=1)
+    bus_faults: BusFaultsConfig | None = None
 
     @model_validator(mode="after")
     def _validate_cross_references(self) -> Self:
         self._validate_node_names()
         self._validate_unique_addresses()
         self._validate_transport_mode_combination()
+        self._validate_bus_faults_transport()
         self._validate_command_mappings()
         self._validate_telemetry_mappings()
         return self
@@ -574,6 +657,14 @@ class TestbedConfig(BaseModel):
                     "hardware nodes require transport.type='socketcan'; "
                     f"in-memory transport was configured for {joined_nodes}"
                 )
+
+    def _validate_bus_faults_transport(self) -> None:
+        if self.bus_faults is not None and not isinstance(self.transport, InMemoryTransportConfig):
+            raise ValueError(
+                "[bus_faults] requires transport.type='in-memory': the frames of a real "
+                "bus, serial line or ZeroMQ hub run on wall-clock time, so a fault there "
+                "could not be replayed from a seed"
+            )
 
     def _validate_command_mappings(self) -> None:
         for node_name, node in self.nodes.items():
@@ -675,6 +766,17 @@ class InjectFaultStep(BaseModel):
         return self
 
 
+class InjectBusFaultStep(BusFaultRule):
+    """Scenario step that adds a :class:`BusFaultRule` to the in-memory bus.
+
+    The rule's own fields sit next to ``action`` (``type`` is the kind of bus fault,
+    as it is the kind of fault for ``inject_fault``). Frame counting for ``nth``
+    starts when the step runs.
+    """
+
+    action: Literal["inject_bus_fault"]
+
+
 class SendCommandStep(BaseModel):
     """Scenario step that references a configured named command."""
 
@@ -725,7 +827,7 @@ class AssertStep(BaseModel):
 
 
 ScenarioStep: TypeAlias = Annotated[
-    WaitStep | InjectFaultStep | SendCommandStep | AssertStep,
+    WaitStep | InjectFaultStep | InjectBusFaultStep | SendCommandStep | AssertStep,
     Field(discriminator="action"),
 ]
 
@@ -845,6 +947,12 @@ def validate_scenario_references(scenario: ScenarioScript, setup: TestbedConfig)
         prefix = f"step {index} ({step.action})"
         if isinstance(step, InjectFaultStep):
             _validate_fault_reference(step, configured_nodes, prefix, errors)
+        elif isinstance(step, InjectBusFaultStep):
+            if not isinstance(setup.transport, InMemoryTransportConfig):
+                errors.append(
+                    f"{prefix}: bus faults require transport.type='in-memory', "
+                    f"not {setup.transport.type!r}"
+                )
         elif isinstance(step, SendCommandStep):
             _validate_command_reference(step, setup, configured_nodes, prefix, errors)
         elif isinstance(step, AssertStep) and step.signal not in telemetry_signals:
@@ -1049,10 +1157,13 @@ def _read_text(path: str | Path) -> str:
 __all__ = [
     "AssertStep",
     "AssertionOperator",
+    "BusFaultRule",
+    "BusFaultsConfig",
     "CommandMapping",
     "ConfigParseError",
     "FaultType",
     "InMemoryTransportConfig",
+    "InjectBusFaultStep",
     "InjectFaultStep",
     "ModuleType",
     "NodeConfig",
