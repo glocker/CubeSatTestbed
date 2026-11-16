@@ -157,6 +157,8 @@ class TracingTransportAdapter(TransportAdapter):
             "TX": CspReassembler(max_packet_bytes=None),
             "RX": CspReassembler(max_packet_bytes=None),
         }
+        self._sending = False
+        self._after_send: list[Callable[[], None]] = []
 
     @property
     def inner(self) -> TransportAdapter:
@@ -177,8 +179,13 @@ class TracingTransportAdapter(TransportAdapter):
         bus.
         """
 
-        envelope = self._inner.send(frame, source=source)
-        self._trace("TX", envelope)
+        self._sending = True
+        try:
+            envelope = self._inner.send(frame, source=source)
+            self._trace("TX", envelope)
+        finally:
+            self._sending = False
+            self._run_after_send()
         return envelope
 
     def receive(
@@ -193,6 +200,20 @@ class TracingTransportAdapter(TransportAdapter):
         if envelope is not None:
             self._trace("RX", envelope)
         return envelope
+
+    def after_frame(self, action: Callable[[], None]) -> None:
+        """Run ``action`` once the frame being sent has been traced, or now if none is.
+
+        What a wrapped adapter reports *about* a frame while it is being sent (the
+        bus fault injector's ``FAULT`` lines) happens before this adapter has traced
+        that frame; deferring it keeps the trace in reading order: the frame first,
+        then what was done to it.
+        """
+
+        if self._sending:
+            self._after_send.append(action)
+        else:
+            action()
 
     def new_sender(self, *, max_packet_bytes: int = 256) -> PacketSender:
         """Ask the wrapped adapter: how a packet becomes frames depends on the link."""
@@ -213,6 +234,11 @@ class TracingTransportAdapter(TransportAdapter):
         """Close the wrapped adapter; the trace stream is not owned here."""
 
         self._inner.close()
+
+    def _run_after_send(self) -> None:
+        actions, self._after_send = self._after_send, []
+        for action in actions:
+            action()
 
     def _trace(self, direction: str, envelope: TransportEnvelope) -> None:
         record = describe_frame(

@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from cubesat_testbed.report.recorder import (
     RecordedAssertion,
     RecordedDrop,
+    RecordedFault,
     RecordedFrame,
     RecordedStep,
     RunRecorder,
@@ -366,6 +367,27 @@ def _drop_row(entry: RecordedDrop, names: dict[int, str], number: int) -> str:
     )
 
 
+def _fault_row(entry: RecordedFault, names: dict[int, str], number: int) -> str:
+    event = entry.event
+    nodes = " ".join(str(a) for a in (event.source, event.destination) if a is not None)
+    ports = " ".join(str(a) for a in (event.destination_port, event.source_port) if a is not None)
+    route = ""
+    if event.source is not None and event.destination is not None:
+        route = f" {_node_label(event.source, names)} → {_node_label(event.destination, names)}" + (
+            f" port {event.destination_port}" if event.destination_port is not None else ""
+        )
+    detail = f" {event.detail}" if event.detail else ""
+    return (
+        f'<tr id="x{number}" class="fault" data-kind="fault" data-dir="{_esc(event.direction)}" '
+        f'data-nodes="{_esc(nodes)}" data-ports="{_esc(ports)}" data-t="{event.time}">'
+        f"<td>fault</td><td>{_esc(format_virtual_time(event.time))}</td>"
+        f"<td>{_esc(event.direction)}</td>"
+        f'<td colspan="7"><span class="chip fail">FAULT</span> <strong>{_esc(event.type)}</strong> '
+        f"rule {_esc(event.rule)}, match {event.match}{_esc(route)}{_esc(detail)}, "
+        f'data <span class="hex">{_esc(_hex(event.data))}</span></td></tr>'
+    )
+
+
 def _step_row(entry: RecordedStep) -> str:
     return (
         f'<tr class="step" data-kind="step" data-dir="" data-nodes="" data-ports="" '
@@ -378,6 +400,7 @@ def _step_row(entry: RecordedStep) -> str:
 def _timeline_section(recorder: RunRecorder, names: dict[int, str]) -> str:
     rows: list[str] = []
     drops = 0
+    faults = 0
     addresses: set[int] = set()
     ports: set[int] = set()
     for entry in recorder.timeline:
@@ -395,6 +418,15 @@ def _timeline_section(recorder: RunRecorder, names: dict[int, str]) -> str:
             for address in (entry.sender, entry.destination):
                 if address is not None:
                     addresses.add(address)
+        elif isinstance(entry, RecordedFault):
+            faults += 1
+            rows.append(_fault_row(entry, names, faults))
+            for address in (entry.event.source, entry.event.destination):
+                if address is not None:
+                    addresses.add(address)
+            for port in (entry.event.destination_port, entry.event.source_port):
+                if port is not None:
+                    ports.add(port)
         else:
             rows.append(_step_row(entry))
     node_options = "".join(
@@ -409,6 +441,7 @@ def _timeline_section(recorder: RunRecorder, names: dict[int, str]) -> str:
         f'<label>port <select id="f-port"><option value="">all</option>{port_options}</select></label>'
         '<label><input type="checkbox" id="k-frame" checked> frames</label>'
         '<label><input type="checkbox" id="k-drop" checked> drops</label>'
+        '<label><input type="checkbox" id="k-fault" checked> bus faults</label>'
         '<label><input type="checkbox" id="k-step" checked> steps</label>'
         '<label>search <input type="search" id="f-text" placeholder="payload, annotation…"></label>'
         '<span id="f-count" class="muted"></span></form>'
@@ -422,7 +455,7 @@ def _timeline_section(recorder: RunRecorder, names: dict[int, str]) -> str:
     return (
         '<section id="timeline-section"><h2>Timeline</h2>'
         '<p class="muted">Every frame that crossed the transport boundary, in order, with the '
-        "scenario steps and dropped packets. On the in-memory bus a frame appears twice, "
+        "scenario steps, dropped packets and injected bus faults. On the in-memory bus a frame appears twice, "
         "TX when sent and RX when read back: that round trip is what an assertion observes."
         f"</p>{controls}{table}</section>"
     )
@@ -472,6 +505,7 @@ var dir=document.getElementById('f-dir'),node=document.getElementById('f-node'),
 port=document.getElementById('f-port'),text=document.getElementById('f-text'),
 count=document.getElementById('f-count');
 var kinds={frame:document.getElementById('k-frame'),drop:document.getElementById('k-drop'),
+fault:document.getElementById('k-fault'),
 step:document.getElementById('k-step')};
 if(!rows.length||!dir){return;}
 function has(list,value){return (' '+list+' ').indexOf(' '+value+' ')>=0;}
@@ -483,7 +517,7 @@ if(show&&kind==='frame'){
 if(dir.value&&row.getAttribute('data-dir')!==dir.value){show=false;}
 if(show&&node.value&&!has(row.getAttribute('data-nodes'),node.value)){show=false;}
 if(show&&port.value&&!has(row.getAttribute('data-ports'),port.value)){show=false;}
-}else if(show&&kind==='drop'&&node.value&&!has(row.getAttribute('data-nodes'),node.value)){show=false;}
+}else if(show&&(kind==='drop'||kind==='fault')&&node.value&&!has(row.getAttribute('data-nodes'),node.value)){show=false;}
 if(show&&needle&&row.textContent.toLowerCase().indexOf(needle)<0){show=false;}
 row.hidden=!show;if(show){shown++;}
 });
@@ -534,7 +568,11 @@ def render_report(
         status, label = "fail", "FAIL"
 
     last_time = max(
-        [entry.time for entry in recorder.timeline if not isinstance(entry, RecordedFrame)]
+        [
+            entry.event.time if isinstance(entry, RecordedFault) else entry.time
+            for entry in recorder.timeline
+            if not isinstance(entry, RecordedFrame)
+        ]
         + [
             entry.record.time
             for entry in recorder.timeline
@@ -549,10 +587,21 @@ def render_report(
     passed = sum(1 for a in recorder.assertions if a.result.passed)
     failed = len(recorder.assertions) - passed
     drops = sum(1 for entry in recorder.timeline if isinstance(entry, RecordedDrop))
+    bus_faults = sum(1 for entry in recorder.timeline if isinstance(entry, RecordedFault))
     summary = [
         f"<span>assertions: <strong>{passed}</strong> passed, <strong>{failed}</strong> failed</span>",
         f"<span>frames traced: <strong>{len(recorder.frames)}</strong></span>",
         f"<span>dropped packets: <strong>{drops}</strong></span>",
+        *(
+            [
+                (
+                    f"<span>bus faults: <strong>{bus_faults}</strong> "
+                    f"(seed <strong>{result.bus_fault_seed}</strong>)</span>"
+                )
+            ]
+            if result is not None and result.bus_fault_seed is not None
+            else []
+        ),
         (
             f"<span>virtual time: <strong>{_esc(format_virtual_time(start))}</strong> → "
             f"<strong>{_esc(format_virtual_time(end))}</strong></span>"

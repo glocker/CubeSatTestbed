@@ -276,6 +276,25 @@ It is written even when assertions fail or the run aborts, and it composes with
 `--json`, `--quiet` and `--trace`. The file contains no wall-clock time, so the same run
 produces the same bytes.
 
+**9. Break the bus itself**
+
+`inject_fault` breaks a module. The bus can fail too: drop the Nth frame on a port,
+delay a frame by a virtual duration, flip a byte, duplicate a frame or deliver it after
+the next one, on send or on receive. Add the rule to the setup, or as a scenario step:
+
+```yaml
+- action: inject_bus_fault
+  type: drop
+  port: 10        # destination port; the 2nd frame addressed to it is lost
+  nth: 2
+```
+
+The randomness (`probability`, the byte a `corrupt` rule picks) is seeded
+(`[bus_faults] seed = 42`), delays are virtual time, so two runs with one seed give
+byte-identical traces, and every fault is marked in `--trace`, the text and `--json`
+output and the HTML report, never silent. In-memory transport only. See
+[`docs/v1-scope.md`](docs/v1-scope.md#bus-faults).
+
 ## Hardware in the loop
 
 Point the same scenario at a real bus: switch the node under test to

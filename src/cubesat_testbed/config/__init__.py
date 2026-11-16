@@ -1,11 +1,16 @@
 """Configuration and scenario schema parsing."""
 
 from cubesat_testbed.config.parser import (
+    BUS_FAULT_DEFAULT_HOLD_US,
     AssertionOperator,
     AssertStep,
+    BusFaultRule,
+    BusFaultsConfig,
+    BusFaultType,
     CommandMapping,
     ConfigParseError,
     FaultType,
+    InjectBusFaultStep,
     InjectFaultStep,
     InMemoryTransportConfig,
     KissTransportConfig,
@@ -39,12 +44,17 @@ from cubesat_testbed.config.parser import (
 )
 
 __all__ = [
+    "BUS_FAULT_DEFAULT_HOLD_US",
     "AssertStep",
     "AssertionOperator",
+    "BusFaultRule",
+    "BusFaultType",
+    "BusFaultsConfig",
     "CommandMapping",
     "ConfigParseError",
     "FaultType",
     "InMemoryTransportConfig",
+    "InjectBusFaultStep",
     "InjectFaultStep",
     "KissTransportConfig",
     "ModuleType",

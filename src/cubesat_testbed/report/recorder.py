@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from cubesat_testbed.transport.base import TransportEnvelope
+from cubesat_testbed.transport.faults import BusFaultEvent
 from cubesat_testbed.transport.tracing import FrameRecord
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids a runtime import cycle
@@ -44,6 +45,13 @@ class RecordedDrop:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordedFault:
+    """A fault the bus injected, at its virtual time."""
+
+    event: BusFaultEvent
+
+
+@dataclass(frozen=True, slots=True)
 class RecordedStep:
     """A scenario step starting, so the timeline shows what the scenario was doing."""
 
@@ -67,7 +75,7 @@ class RecordedAssertion:
     evidence_frame: int | None
 
 
-TimelineEntry = RecordedFrame | RecordedDrop | RecordedStep
+TimelineEntry = RecordedFrame | RecordedDrop | RecordedFault | RecordedStep
 
 
 class RunRecorder:
@@ -125,6 +133,9 @@ class RunRecorder:
             )
         )
 
+    def fault(self, event: BusFaultEvent) -> None:
+        self.timeline.append(RecordedFault(event=event))
+
     def signal(self, time: int, signal: str, value: object) -> None:
         self.signals.setdefault(signal, []).append((time, value))
 
@@ -132,7 +143,7 @@ class RunRecorder:
         self.assertions.append(RecordedAssertion(result=result, evidence_frame=evidence_frame))
 
 
-_DURATION_KEYS = frozenset({"virtual_time", "duration", "timeout"})
+_DURATION_KEYS = frozenset({"virtual_time", "duration", "timeout", "delay", "hold"})
 
 
 def describe_step(step: Any) -> str:
@@ -160,6 +171,7 @@ def format_virtual_time(microseconds: int) -> str:
 __all__ = [
     "RecordedAssertion",
     "RecordedDrop",
+    "RecordedFault",
     "RecordedFrame",
     "RecordedStep",
     "RunRecorder",

@@ -38,6 +38,7 @@ from cubesat_testbed.scenario import (
     run_scenario_files,
 )
 from cubesat_testbed.scenario.assertions import AssertionResult
+from cubesat_testbed.transport import format_bus_fault
 
 _EXIT_SUCCESS = 0
 _EXIT_ASSERTION_FAILURE = 1
@@ -276,6 +277,8 @@ def _run_command(args: argparse.Namespace) -> int:
     elif not args.quiet:
         for dropped in result.dropped_packets:
             print(format_dropped_packet(dropped))
+        for fault in result.bus_faults:
+            print(format_bus_fault(fault))
         _print_summary(result)
     return exit_code
 
@@ -430,6 +433,11 @@ def _print_summary(result: ScenarioRunResult) -> None:
         f"assertions={total} passed={passed} failed={failed} "
         f"started_at={result.started_at} finished_at={result.finished_at}"
         + (f" dropped_packets={len(result.dropped_packets)}" if result.dropped_packets else "")
+        + (
+            f" bus_faults={len(result.bus_faults)} bus_fault_seed={result.bus_fault_seed}"
+            if result.bus_fault_seed is not None
+            else ""
+        )
     )
 
 
@@ -459,6 +467,24 @@ def _result_payload(result: ScenarioRunResult, *, exit_code: int) -> dict[str, o
                 "limit": dropped.limit,
             }
             for dropped in result.dropped_packets
+        ],
+        "bus_fault_seed": result.bus_fault_seed,
+        "bus_faults": [
+            {
+                "time": fault.time,
+                "rule": fault.rule,
+                "type": fault.type,
+                "direction": fault.direction,
+                "match": fault.match,
+                "can_id": fault.can_id,
+                "data": fault.data.hex(),
+                "source": fault.source,
+                "destination": fault.destination,
+                "destination_port": fault.destination_port,
+                "source_port": fault.source_port,
+                "detail": fault.detail,
+            }
+            for fault in result.bus_faults
         ],
     }
 

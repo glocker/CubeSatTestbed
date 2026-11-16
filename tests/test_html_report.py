@@ -413,7 +413,7 @@ function el(extra) { return Object.assign({value: '', checked: true, listeners: 
   addEventListener(type, fn) { this.listeners[type] = fn; }}, extra || {}); }
 const rows = data.rows.map((r) => ({hidden: false, textContent: r.text, getAttribute: attr(r)}));
 const ids = {'f-dir': el(), 'f-node': el(), 'f-port': el(), 'f-text': el(), 'f-count': el(),
-  'k-frame': el(), 'k-drop': el(), 'k-step': el()};
+  'k-frame': el(), 'k-drop': el(), 'k-fault': el(), 'k-step': el()};
 for (const r of rows) {}
 const byId = {};
 data.rows.forEach((r, i) => { if (r.id) byId[r.id] = rows[i]; });
