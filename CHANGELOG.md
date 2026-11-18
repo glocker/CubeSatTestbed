@@ -79,6 +79,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed (internal)
 
+- CSP v1 over CAN golden vectors: twenty captures under `tests/golden_vectors/csp_v1/can/`,
+  taken on `vcan0` from the pinned libcsp `v2.1` (which speaks both protocol versions at run
+  time) through the new `csp_client -v 1`. They are regenerated and diffed in CI and verified
+  against the CFP1 layout by `tests/test_golden_vectors_csp_v1.py`.
 - The `--trace` line is now rendered from a structured `FrameRecord`
   (`transport.tracing.describe_frame` / `format_frame_record`) instead of being built as
   text directly; the output is unchanged. `TracingTransportAdapter` takes an optional
