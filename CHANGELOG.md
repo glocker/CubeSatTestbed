@@ -9,6 +9,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `cubesat_testbed.protocol.csp_v1`: a libcsp-compatible CSP v1 codec for CAN. The 4-byte
+  big-endian header (5-bit addresses, 6-bit ports, 8 flag bits), CFP1 fragmentation
+  (`fragment_packet`, `CspV1Fragmenter`, whose 10-bit packet identification counts per node and
+  wraps) and reassembly in virtual time (`CspV1Reassembler`: remaining-frames countdown, length
+  field, one-second timeout, every drop reported with a reason). A separate code path that
+  shares nothing with the v2 codec, and is verified frame for frame against the CSP v1 golden
+  vectors.
 - CFP2 fragmentation and reassembly for CSP v2 over CAN. A packet longer than
   one CAN frame -- more than 4 payload bytes, or any payload with a CRC32/HMAC
   trailer -- is now sent as several frames and rebuilt at the receiver, as

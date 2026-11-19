@@ -15,6 +15,7 @@ src/cubesat_testbed/
   scenario/assertions.py  # PASS/FAIL assertion primitives
   dut/manager.py          # Node mode -> DUT participant resolution
   protocol/csp_v2.py      # libcsp-compatible CSP v2 codec
+  protocol/csp_v1.py      # libcsp-compatible CSP v1 codec over CAN (CFP1), independent of csp_v2
   protocol/signal_codec.py    # Byte-aligned scalar signal codec
   protocol/telemetry_codec.py # Bridges TelemetryMapping config to signal_codec
   transport/base.py       # Bus adapter interface
