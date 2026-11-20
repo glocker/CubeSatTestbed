@@ -25,6 +25,7 @@ from cubesat_testbed.transport.base import (
     TransportEndpointError,
     TransportEnvelope,
 )
+from cubesat_testbed.transport.can_protocol import can_protocol_for
 
 
 class InMemoryBusAdapter(TransportAdapter):
@@ -35,7 +36,8 @@ class InMemoryBusAdapter(TransportAdapter):
     they connect; a sender does not receive its own frame on its endpoint queue.
     """
 
-    def __init__(self, *, endpoints: Iterable[EndpointId] = ()) -> None:
+    def __init__(self, *, endpoints: Iterable[EndpointId] = (), protocol_version: int = 2) -> None:
+        self._can_protocol = can_protocol_for(protocol_version)
         self._monitor_queue: deque[TransportEnvelope] = deque()
         self._endpoint_queues: dict[EndpointId, deque[TransportEnvelope]] = {}
         self._next_sequence = 0

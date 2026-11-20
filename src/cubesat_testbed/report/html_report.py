@@ -317,7 +317,10 @@ def _frame_row(entry: RecordedFrame, names: dict[int, str]) -> str:
     else:
         wire = f"CAN 0x{record.can_id:08X}" if record.can_id is not None else ""
     if record.cfp is not None:
-        wire += f" cfp={record.cfp} pc={record.packet_count} fc={record.frame_count}"
+        if record.remaining is not None:  # CSP v1: CFP1 counts frames down and numbers packets
+            wire += f" cfp={record.cfp} rem={record.remaining} id={record.identification}"
+        else:
+            wire += f" cfp={record.cfp} pc={record.packet_count} fc={record.frame_count}"
     if record.has_header:
         route = (
             f"{_esc(_node_label(record.source, names))} → "

@@ -24,6 +24,10 @@ from pydantic import (
     model_validator,
 )
 
+from cubesat_testbed.protocol.csp_v1 import (
+    CSP_V1_ADDRESS_MAX,
+    CSP_V1_BROADCAST_ADDRESS,
+)
 from cubesat_testbed.protocol.csp_v2 import (
     CSP_V2_ADDRESS_MAX,
     CSP_V2_DEFAULT_MAX_PACKET_BYTES,
@@ -590,6 +594,8 @@ class TestbedConfig(BaseModel):
 
     model_config = _SCHEMA_MODEL_CONFIG
 
+    protocol_version: Literal[1, 2] = 2
+    """CSP protocol version of the whole setup: every node and every frame is v1 or v2."""
     transport: TransportConfig
     nodes: dict[str, NodeConfig] = Field(min_length=1)
     bus_faults: BusFaultsConfig | None = None
@@ -599,6 +605,7 @@ class TestbedConfig(BaseModel):
         self._validate_node_names()
         self._validate_unique_addresses()
         self._validate_transport_mode_combination()
+        self._validate_protocol_version()
         self._validate_bus_faults_transport()
         self._validate_command_mappings()
         self._validate_telemetry_mappings()
@@ -656,6 +663,26 @@ class TestbedConfig(BaseModel):
                 raise ValueError(
                     "hardware nodes require transport.type='socketcan'; "
                     f"in-memory transport was configured for {joined_nodes}"
+                )
+
+    def _validate_protocol_version(self) -> None:
+        if self.protocol_version != 1:
+            return
+        if isinstance(self.transport, KissTransportConfig | ZmqTransportConfig):
+            raise ValueError(  # noqa: TRY004 - pydantic validators report ValueError
+                "protocol_version = 1 runs over a CAN link (transport.type 'in-memory' or "
+                f"'socketcan'); {self.transport.type!r} carries CSP v2 only"
+            )
+        for node_name, node in self.nodes.items():
+            if node.address > CSP_V1_ADDRESS_MAX:
+                raise ValueError(
+                    f"node {node_name!r} has CSP address {node.address}, but CSP v1 addresses "
+                    f"are 5 bits wide (0-{CSP_V1_ADDRESS_MAX})"
+                )
+            if node.address == CSP_V1_BROADCAST_ADDRESS:
+                raise ValueError(
+                    f"node {node_name!r} has CSP address {node.address}, the CSP v1 broadcast "
+                    f"address; the highest usable node address is {CSP_V1_BROADCAST_ADDRESS - 1}"
                 )
 
     def _validate_bus_faults_transport(self) -> None:

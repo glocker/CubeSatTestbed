@@ -42,6 +42,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from cubesat_testbed.config import BUS_FAULT_DEFAULT_HOLD_US, BusFaultRule
+from cubesat_testbed.protocol import csp_v1
+from cubesat_testbed.protocol.csp_v1 import CspV1CanFrame, CspV1CodecError
 from cubesat_testbed.protocol.csp_v2 import (
     CspCanFrame,
     CspV2CodecError,
@@ -57,6 +59,7 @@ from cubesat_testbed.transport.base import (
     TransportEnvelope,
     TransportError,
 )
+from cubesat_testbed.transport.can_protocol import CanFrame, CanProtocol
 from cubesat_testbed.transport.in_memory import InMemoryBusAdapter
 from cubesat_testbed.transport.tracing import TRACE_PREFIX
 
@@ -222,7 +225,7 @@ class FaultInjectingTransport(TransportAdapter):
         self._next_sequence = 0
         self._sequence_by_inner: dict[int, int] = {}
         self._lost_sequences: list[int] = []
-        self._packet_headers: dict[str, dict[tuple[int, int, int, int], _Header]] = {
+        self._packet_headers: dict[str, dict[tuple[int, ...], _Header]] = {
             "tx": {},
             "rx": {},
         }
@@ -324,6 +327,10 @@ class FaultInjectingTransport(TransportAdapter):
             self._rx_ready.clear()
 
     # --- adapter surface ---------------------------------------------------------------
+
+    @property
+    def can_protocol(self) -> CanProtocol:
+        return self._inner.can_protocol
 
     def new_sender(self, *, max_packet_bytes: int = 256) -> PacketSender:
         return self._inner.new_sender(max_packet_bytes=max_packet_bytes)
@@ -513,18 +520,21 @@ class FaultInjectingTransport(TransportAdapter):
                 return rule, match
         return None, None
 
-    def _header_of(self, frame: CspCanFrame, direction: str) -> _Header:
+    def _header_of(self, frame: CanFrame, direction: str) -> _Header:
         """Selectable header of a frame, taking a fragment's from its first frame.
 
         Only the first frame of a multi-frame packet carries ports and the source
         address; the others carry the sender and destination. The headers seen are
         remembered, per direction and keyed the way a receiver matches fragments
-        (priority, destination, sender, packet counter), so a rule on a port reaches
-        every fragment of the packet, and a rule can single one out by ``nth``.
+        (CSP v2: priority, destination, sender, packet counter; CSP v1: source, destination,
+        identification), so a rule on a port reaches every fragment of the packet, and a rule
+        can single one out by ``nth``.
         """
 
         if not frame.is_extended_id:
             return _Header()
+        if isinstance(frame, CspV1CanFrame):
+            return self._header_of_v1(frame, direction)
         can_fields = decode_can_id(frame.can_id)
         key = (
             can_fields.priority,
@@ -556,7 +566,35 @@ class FaultInjectingTransport(TransportAdapter):
             return _Header(source=can_fields.sender, destination=can_fields.destination)
         return remembered
 
-    def _corrupt(self, rule: _ActiveRule, frame: CspCanFrame) -> tuple[CspCanFrame, str]:
+    def _header_of_v1(self, frame: CspV1CanFrame, direction: str) -> _Header:
+        can_fields = csp_v1.decode_can_id(frame.can_id)
+        key = (can_fields.source, can_fields.destination, can_fields.identification)
+        known = self._packet_headers[direction]
+        last = can_fields.remaining == 0
+        if can_fields.begin:
+            try:
+                first = csp_v1.decode_first_frame_header(frame)
+            except CspV1CodecError:
+                return _Header(source=can_fields.source, destination=can_fields.destination)
+            header = _Header(
+                source=first.source,
+                destination=first.destination,
+                destination_port=first.destination_port,
+                source_port=first.source_port,
+            )
+            if last:
+                known.pop(key, None)
+            else:
+                known[key] = header
+            return header
+        remembered = known.get(key)
+        if last:
+            known.pop(key, None)
+        if remembered is None:
+            return _Header(source=can_fields.source, destination=can_fields.destination)
+        return remembered
+
+    def _corrupt(self, rule: _ActiveRule, frame: CanFrame) -> tuple[CanFrame, str]:
         spec = rule.spec
         data = bytearray(frame.data)
         if not data:
@@ -576,7 +614,7 @@ class FaultInjectingTransport(TransportAdapter):
         rule: _ActiveRule,
         match: int,
         direction: str,
-        frame: CspCanFrame,
+        frame: CanFrame,
         header: _Header,
         detail: str,
     ) -> None:
@@ -599,8 +637,8 @@ class FaultInjectingTransport(TransportAdapter):
             self._on_event(event)
 
 
-def _require_can(frame: Frame) -> CspCanFrame:
-    if not isinstance(frame, CspCanFrame):
+def _require_can(frame: Frame) -> CanFrame:
+    if not isinstance(frame, CspCanFrame | CspV1CanFrame):
         raise TransportError("bus faults apply to CAN frames; this link carries whole packets")
     return frame
 

@@ -9,6 +9,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- CSP v1 over CAN, selected from the setup with `protocol_version = 1` (default 2) and carried
+  by the `in-memory` and `socketcan` transports. The whole run is then CSP v1: the runner, the
+  OBC Peer, `--trace` (`cfp=begin|more|end rem=N id=I`), dropped packets, the HTML report and
+  bus faults all work on CFP1 frames. Setup validation refuses what v1 cannot carry: the
+  `kiss` and `zmq` transports, addresses above 30 and the broadcast address 31. A packet
+  longer than the receiving node's `max_packet_bytes` is reported once, at its first frame. A
+  SocketCAN adapter refuses a frame of the other protocol version. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#csp-v1-over-can).
 - `cubesat_testbed.protocol.csp_v1`: a libcsp-compatible CSP v1 codec for CAN. The 4-byte
   big-endian header (5-bit addresses, 6-bit ports, 8 flag bits), CFP1 fragmentation
   (`fragment_packet`, `CspV1Fragmenter`, whose 10-bit packet identification counts per node and

@@ -333,8 +333,10 @@ sudo ip link set up vcan0
 
 ## v1 scope at a glance
 
-- Protocol: CSP v2 only, classic CAN 2.0, extended 29-bit IDs, with CFP2
-  fragmentation for packets longer than one CAN frame.
+- Protocol: CSP v2 (CFP2 fragmentation for packets longer than one CAN frame) or CSP v1
+  over CAN (`protocol_version = 1` in the setup, CFP1 framing, 5-bit addresses); classic
+  CAN 2.0, extended 29-bit IDs. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#csp-v1-over-can).
 - Modules: Generic EPS, OBC Peer (rule engine), Simple Payload, RC thermal
   node -- plus your own, registered the same way the built-ins are
   ([`docs/writing-a-module.md`](docs/writing-a-module.md)).

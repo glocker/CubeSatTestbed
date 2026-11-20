@@ -520,6 +520,7 @@ class CspV1Reassembler:
         )
         self.timeout_us = _validate_uint("timeout_us", timeout_us, 2**62)
         self._partials: dict[_ConnectionKey, _PartialPacket] = {}
+        self._refused: dict[_ConnectionKey, int] = {}
 
     @property
     def pending_count(self) -> int:
@@ -550,6 +551,14 @@ class CspV1Reassembler:
         partial = self._partials.get(key)
 
         if partial is None:
+            if not can_fields.begin and key in self._refused:
+                # The rest of a packet already dropped for being too long: the drop was
+                # reported once, at its first frame, and these frames are part of it.
+                if can_fields.remaining == 0:
+                    del self._refused[key]
+                else:
+                    self._refused[key] = now
+                return ()
             if not can_fields.begin:
                 events.append(
                     self._dropped(
@@ -590,9 +599,12 @@ class CspV1Reassembler:
                     )
                 )
                 return tuple(events)
+            self._refused.pop(key, None)
             fields = unpack_header(frame.data)
             length = _declared_length(frame)
             if self.max_packet_bytes is not None and length > self.max_packet_bytes:
+                if can_fields.remaining > 0:
+                    self._refused[key] = now
                 events.append(
                     self._dropped(
                         ReassemblyDropReason.OVERFLOW,
@@ -696,6 +708,8 @@ class CspV1Reassembler:
         """Drop every partial packet idle for more than the reassembly timeout."""
 
         events: list[ReassemblyEvent] = []
+        for key in [k for k, last in self._refused.items() if now - last > self.timeout_us]:
+            del self._refused[key]
         for key in list(self._partials):
             partial = self._partials[key]
             if now - partial.last_used > self.timeout_us:

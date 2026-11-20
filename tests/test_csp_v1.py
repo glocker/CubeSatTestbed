@@ -357,10 +357,9 @@ def test_a_packet_longer_than_the_receivers_buffer_is_dropped_at_its_first_frame
     assert drop.limit == 32
     assert "40" in drop.detail
     assert reassembler.pending_count == 0
-    # Its remaining frames are strays now.
-    assert (
-        _drops(reassembler.feed(rest[0], now=1))[0].reason is ReassemblyDropReason.ORPHAN_FRAGMENT
-    )
+    # The packet is reported once, at its first frame; the frames still to come belong to it
+    # and are not reported again as strays.
+    assert [reassembler.feed(frame, now=1 + i) for i, frame in enumerate(rest)] == [()] * len(rest)
 
 
 def test_a_packet_exactly_the_size_of_the_buffer_fits() -> None:
@@ -493,3 +492,40 @@ def test_the_v1_codec_does_not_import_the_v2_codec() -> None:
 
     assert not any("csp_v2" in name for name in imported)
     assert issubclass(CspV1FrameError, CspV1CodecError)
+
+
+def test_a_refused_packets_connection_is_free_again_after_its_last_frame() -> None:
+    big = _frame(0, payload=bytes(40))
+    small = _frame(0, payload=bytes(5))
+    reassembler = CspV1Reassembler(max_packet_bytes=32)
+    for frame in big:
+        reassembler.feed(frame, now=0)
+
+    events = [e for f in small for e in reassembler.feed(f, now=1)]
+
+    assert events[-1].kind == "complete"  # same source, destination and identification
+
+
+def test_a_new_first_frame_ends_the_silence_about_a_refused_packet() -> None:
+    first, *_rest = _frame(0, payload=bytes(40))
+    small_first, small_second = _frame(0, payload=bytes(5))
+    reassembler = CspV1Reassembler(max_packet_bytes=32)
+    reassembler.feed(first, now=0)  # refused; its other frames never arrive
+
+    reassembler.feed(small_first, now=1)
+    events = reassembler.feed(small_second, now=2)
+
+    assert events[-1].kind == "complete"
+
+
+def test_the_memory_of_a_refused_packet_expires() -> None:
+    first, second, *_ = _frame(0, payload=bytes(40))
+    reassembler = CspV1Reassembler(max_packet_bytes=32, timeout_us=1_000_000)
+    reassembler.feed(first, now=0)
+
+    reassembler.expire(2_000_000)
+
+    # With the packet forgotten, a late continuation frame is a stray like any other.
+    assert _drops(reassembler.feed(second, now=2_000_001))[0].reason is (
+        ReassemblyDropReason.ORPHAN_FRAGMENT
+    )
