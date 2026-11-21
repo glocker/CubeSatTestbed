@@ -319,6 +319,12 @@ straight through virtual time and a real board never gets wall-clock time to
 answer. A `socketcan` setup run without the flag therefore warns on `stderr`.
 Under `--realtime`, a scenario that waits `30s` really does take 30 seconds.
 
+Who a frame is addressed to matters on a real bus, because a real node only receives frames
+carrying its own CSP address. For the telemetry of a *simulated* node that a real OBC (or any
+other real node) has to receive, name the receiver in the mapping with `to = "obc"`; a *real*
+board's telemetry is matched whatever it is addressed to unless you name a node. Details in
+[`docs/v1-scope.md`](docs/v1-scope.md#who-a-telemetry-frame-is-addressed-to).
+
 Add `--trace` when a HIL run misbehaves: on SocketCAN the adapter never
 receives its own messages, so the trace is the only place both what the
 testbed sent and what the board answered show up side by side.

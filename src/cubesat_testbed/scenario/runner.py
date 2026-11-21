@@ -77,7 +77,12 @@ from cubesat_testbed.transport import (
     TransportEnvelope,
     build_transport_adapter,
 )
-from cubesat_testbed.transport.can_protocol import PacketEvent, PacketReassembler, PacketView
+from cubesat_testbed.transport.can_protocol import (
+    PacketEvent,
+    PacketFields,
+    PacketReassembler,
+    PacketView,
+)
 from cubesat_testbed.transport.faults import (
     BusFaultEvent,
     FaultInjectingTransport,
@@ -150,11 +155,13 @@ class _CommandRoute:
 class _TelemetryRoute:
     """CSP routing plus wire-codec metadata for one configured telemetry signal.
 
-    Telemetry frames are self-addressed (``destination_address ==
-    source_address``): v1 has no dedicated telemetry-sink node, and the
-    in-memory bus's monitor queue already sees every frame regardless of its
-    destination, matching a promiscuous CAN bus analyzer rather than one more
-    addressed endpoint.
+    A frame the testbed sends for a simulated node is addressed to the node the mapping
+    names with ``to`` (an OBC, whose own CAN filter then accepts it) and, when the mapping
+    names none, to its own sender: the in-memory bus's monitor queue sees every frame
+    whatever its destination, like a promiscuous bus analyzer, but a real node on a real
+    bus does not. A frame the testbed *receives* is matched on the sender's address and
+    the ports, and on the destination only when the mapping named one: a real EPS sends its
+    housekeeping to the OBC, never to itself, and that must still be the EPS's signal.
     """
 
     signal: str
@@ -162,11 +169,22 @@ class _TelemetryRoute:
     field_name: str
     source_address: int
     destination_address: int
+    destination_named: bool
     destination_port: int
     source_port: int
     priority: int
     flags: int
     mapping: TelemetryMapping
+
+    def matches(self, fields: PacketFields) -> bool:
+        """Whether a received packet is this signal's."""
+
+        return (
+            self.source_address == fields.source
+            and self.destination_port == fields.destination_port
+            and self.source_port == fields.source_port
+            and (not self.destination_named or self.destination_address == fields.destination)
+        )
 
 
 @dataclass(slots=True)
@@ -937,14 +955,7 @@ class ScenarioRunner:
         """Resolve the configured telemetry route for an inbound CSP frame, if any."""
 
         fields = packet.fields
-        candidates = [
-            route
-            for route in self.runtime.telemetry_routes
-            if route.source_address == fields.source
-            and route.destination_address == fields.destination
-            and route.destination_port == fields.destination_port
-            and route.source_port == fields.source_port
-        ]
+        candidates = [route for route in self.runtime.telemetry_routes if route.matches(fields)]
         if len(candidates) == 1:
             return candidates[0]
         if not candidates:
@@ -1267,14 +1278,7 @@ def _build_frame_annotator(
         if commands:
             return "command ambiguous-route"
 
-        telemetry = [
-            route
-            for route in telemetry_routes
-            if route.source_address == fields.source
-            and route.destination_address == fields.destination
-            and route.destination_port == fields.destination_port
-            and route.source_port == fields.source_port
-        ]
+        telemetry = [route for route in telemetry_routes if route.matches(fields)]
         if len(telemetry) == 1:
             return _telemetry_annotation(telemetry[0], packet.payload)
         if telemetry:
@@ -1355,7 +1359,10 @@ def _build_telemetry_routes(setup: TestbedConfig) -> tuple[_TelemetryRoute, ...]
                     node_name=node_name,
                     field_name=field_name,
                     source_address=node.address,
-                    destination_address=node.address,
+                    destination_address=(
+                        node.address if mapping.to is None else setup.nodes[mapping.to].address
+                    ),
+                    destination_named=mapping.to is not None,
                     destination_port=mapping.destination_port,
                     source_port=mapping.source_port,
                     priority=mapping.priority,

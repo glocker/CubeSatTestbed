@@ -105,6 +105,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Telemetry was addressed to its own sender, so on a real bus it could not travel in either
+  direction. A real EPS that sends its housekeeping to the OBC (`src=2 dst=1`) matched no
+  telemetry route, was dropped as an unknown frame and left the assertion "never observed on
+  the bus"; and a simulated node's telemetry (`src=2 dst=2`) was filtered out by the CAN driver
+  of any real OBC. A telemetry mapping now takes `to = "<node>"`, which addresses a simulated
+  node's frames to that node, and a signal sent by a real node is matched on the sender's
+  address and the ports whatever the frame is addressed to (only a mapping that names `to`
+  also requires the destination). Without `to` a simulated node's telemetry is still sent to
+  itself, so existing setups behave as before. Reproduced and fixed on a real `vcan0` against
+  libcsp `v2.1` as both CSP v1 and v2, with new `socketcan` tests. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#who-a-telemetry-frame-is-addressed-to).
 - A configured command whose target is a `software`/`hardware` node no longer aborts
   the run with `simulated module '<node>' is not available`. Two situations triggered it:
   the testbed overhearing a real peer send that command to another real peer (on

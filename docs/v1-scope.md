@@ -522,10 +522,40 @@ Two consequences worth knowing:
   assertion's `timeout` accordingly.
 
 `cubesat_testbed.protocol.telemetry_codec` bridges declarative config to the
-scalar-only signal codec. Telemetry frames are self-addressed
-(`destination == source`): v1 has no dedicated telemetry-sink node, and the
-in-memory bus's monitor queue already sees every frame regardless of
-destination, matching a promiscuous CAN bus analyzer.
+scalar-only signal codec.
+
+### Who a telemetry frame is addressed to
+
+A real node on a real bus only receives frames carrying its own CSP address (libcsp's
+SocketCAN driver filters on the destination field), so it matters who a telemetry frame is
+addressed to. A mapping may name the receiver with `to`:
+
+```toml
+[nodes.eps.telemetry.battery_percent]
+source_port = 10
+destination_port = 10
+to = "obc"             # the frame is sent src=eps dst=obc
+offset = 0
+length = 4
+type = "float"
+```
+
+- **A simulated node's telemetry** is sent to the node `to` names. Without `to` it is sent
+  to its own sender (`destination == source`): the in-memory bus's monitor queue sees every
+  frame whatever its destination, like a promiscuous bus analyzer, so that works for a
+  scenario that only watches the bus, but no other node on a real bus ever receives it. Set
+  `to` whenever a real node (or a `software` peer on a real link) has to receive the signal.
+- **A real node's telemetry** (a `hardware` or `software` node) is matched on the sender's
+  address and the two ports. Without `to` the destination is not looked at, so a board that
+  sends its housekeeping to the OBC (`src=2 dst=1`, the normal case) and one that addresses
+  itself are both read. With `to` only a frame addressed to that node counts.
+- `to` must name a configured node. It does not change the scenario's assertions, only the
+  frames.
+
+Mind the ports on a real libcsp node: it can only `csp_bind` ports up to
+`CSP_PORT_MAX_BIND` (16 in the default build), so a real OBC cannot listen for telemetry on
+the ports 20-22 the packaged examples use; pick a port a real receiver can bind when the
+receiver is real (`to` plus, say, `destination_port = 10`).
 
 Non-numeric telemetry (e.g. `power_status = "offline"`) declares an `enum`
 mapping raw integer wire values to labels, since the wire codec itself is

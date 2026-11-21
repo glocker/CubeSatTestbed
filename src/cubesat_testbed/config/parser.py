@@ -263,12 +263,20 @@ class TelemetryMapping(BaseModel):
     optionally maps the field's raw integer wire value to a label string (and
     back) for non-numeric telemetry such as ``power_status``, since the wire
     codec itself is scalar-only.
+
+    ``to`` names the node a *simulated* node's telemetry is addressed to (an OBC, say): a
+    real OBC only receives frames carrying its own CSP address. Without it the frame is
+    addressed to its own sender, which no other node on a real bus ever receives. For
+    telemetry a *real* node sends, ``to`` is optional too: without it the signal is matched
+    on the sender's address and the ports whatever the frame is addressed to, with it only a
+    frame addressed to that node counts.
     """
 
     model_config = _SCHEMA_MODEL_CONFIG
 
     source_port: CspPort
     destination_port: CspPort
+    to: str | None = None
     priority: CspPriority = 2
     flags: CspFlags = 0
     signal: str | None = None
@@ -289,6 +297,13 @@ class TelemetryMapping(BaseModel):
         if value is None:
             return None
         return _validate_path("telemetry signal", value, min_segments=3)
+
+    @field_validator("to")
+    @classmethod
+    def _validate_to(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_identifier("telemetry destination node", value)
 
     @model_validator(mode="after")
     def _validate_wire_layout(self) -> Self:
@@ -736,6 +751,11 @@ class TestbedConfig(BaseModel):
                 _validate_identifier("telemetry mapping name", telemetry_name)
                 signal = mapping.resolved_signal(node_name, telemetry_name)
                 _validate_path("telemetry signal", signal, min_segments=3)
+                if mapping.to is not None and mapping.to not in self.nodes:
+                    raise ValueError(
+                        f"telemetry mapping {node_name}.{telemetry_name} is addressed to "
+                        f"unknown node {mapping.to!r}"
+                    )
                 wire_length = mapping.offset + mapping.length
                 if wire_length > node.max_packet_bytes:
                     raise ValueError(
