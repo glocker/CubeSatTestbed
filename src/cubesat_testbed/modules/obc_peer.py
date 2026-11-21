@@ -39,6 +39,7 @@ from cubesat_testbed.modules.base import (
     _validate_identifier,
     _validate_optional_endpoint,
 )
+from cubesat_testbed.protocol.csp_v1 import CspV1CodecError
 from cubesat_testbed.protocol.csp_v2 import (
     CSP_V2_DEFAULT_MAX_PACKET_BYTES,
     CspFields,
@@ -245,7 +246,7 @@ class ObcPeerNamedCommand:
             if sender is not None:
                 return sender.frames(fields, bytes(self.payload))
             return fragment_packet(fields, self.payload)
-        except CspV2CodecError as exc:
+        except (CspV2CodecError, CspV1CodecError) as exc:
             raise ModuleError(f"named command cannot be encoded as CSP frames: {exc}") from exc
 
 

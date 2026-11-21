@@ -54,11 +54,8 @@ from cubesat_testbed.modules import (
 from cubesat_testbed.protocol.csp_v2 import (
     CSP_V2_DEFAULT_MAX_PACKET_BYTES,
     CspFields,
-    CspReassembler,
-    ReassemblyEvent,
-    decode_can_id,
 )
-from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame, CspPacketView
+from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame
 from cubesat_testbed.protocol.telemetry_codec import (
     TelemetryCodecError,
     decode_telemetry_value,
@@ -79,6 +76,12 @@ from cubesat_testbed.transport import (
     TransportAdapter,
     TransportEnvelope,
     build_transport_adapter,
+)
+from cubesat_testbed.transport.can_protocol import (
+    PacketEvent,
+    PacketFields,
+    PacketReassembler,
+    PacketView,
 )
 from cubesat_testbed.transport.faults import (
     BusFaultEvent,
@@ -152,11 +155,13 @@ class _CommandRoute:
 class _TelemetryRoute:
     """CSP routing plus wire-codec metadata for one configured telemetry signal.
 
-    Telemetry frames are self-addressed (``destination_address ==
-    source_address``): v1 has no dedicated telemetry-sink node, and the
-    in-memory bus's monitor queue already sees every frame regardless of its
-    destination, matching a promiscuous CAN bus analyzer rather than one more
-    addressed endpoint.
+    A frame the testbed sends for a simulated node is addressed to the node the mapping
+    names with ``to`` (an OBC, whose own CAN filter then accepts it) and, when the mapping
+    names none, to its own sender: the in-memory bus's monitor queue sees every frame
+    whatever its destination, like a promiscuous bus analyzer, but a real node on a real
+    bus does not. A frame the testbed *receives* is matched on the sender's address and
+    the ports, and on the destination only when the mapping named one: a real EPS sends its
+    housekeeping to the OBC, never to itself, and that must still be the EPS's signal.
     """
 
     signal: str
@@ -164,11 +169,22 @@ class _TelemetryRoute:
     field_name: str
     source_address: int
     destination_address: int
+    destination_named: bool
     destination_port: int
     source_port: int
     priority: int
     flags: int
     mapping: TelemetryMapping
+
+    def matches(self, fields: PacketFields) -> bool:
+        """Whether a received packet is this signal's."""
+
+        return (
+            self.source_address == fields.source
+            and self.destination_port == fields.destination_port
+            and self.source_port == fields.source_port
+            and (not self.destination_named or self.destination_address == fields.destination)
+        )
 
 
 @dataclass(slots=True)
@@ -343,7 +359,7 @@ class ScenarioRunner:
         self._limits_by_address = {
             node.address: node.max_packet_bytes for node in runtime.setup.nodes.values()
         }
-        self._reassemblers: dict[int, CspReassembler] = {}
+        self._reassemblers: dict[int, PacketReassembler] = {}
         self._senders: dict[int, PacketSender] = {}
         self._dropped_packets: list[DroppedPacket] = []
         self._signal_evidence: dict[str, int | None] = {}
@@ -715,7 +731,7 @@ class ScenarioRunner:
         if isinstance(frame, CspPacketFrame):
             self._deliver_whole_packet(frame, envelope)
             return
-        destination = decode_can_id(frame.can_id).destination if frame.is_extended_id else None
+        destination = self.runtime.transport.can_protocol.frame_destination(frame)
         events = self._reassembler_for(destination).feed(frame, now=self.runtime.engine.now)
         for event in events:
             if event.kind == "dropped":
@@ -765,11 +781,11 @@ class ScenarioRunner:
                 )
             )
 
-    def _reassembler_for(self, destination: int | None) -> CspReassembler:
+    def _reassembler_for(self, destination: int | None) -> PacketReassembler:
         key = -1 if destination is None else destination
         reassembler = self._reassemblers.get(key)
         if reassembler is None:
-            reassembler = CspReassembler(
+            reassembler = self.runtime.transport.can_protocol.new_reassembler(
                 max_packet_bytes=self._limits_by_address.get(key, CSP_V2_DEFAULT_MAX_PACKET_BYTES)
             )
             self._reassemblers[key] = reassembler
@@ -783,8 +799,8 @@ class ScenarioRunner:
             for event in reassembler.expire(now):
                 self._record_drop(event, None if key == -1 else key)
 
-    def _record_drop(self, event: ReassemblyEvent, destination: int | None) -> None:
-        reason = "" if event.reason is None else event.reason.value
+    def _record_drop(self, event: PacketEvent, destination: int | None) -> None:
+        reason = "" if event.reason is None else event.reason
         self._append_drop(
             DroppedPacket(
                 time=event.time,
@@ -804,7 +820,7 @@ class ScenarioRunner:
             self.runtime.trace.write(format_drop_trace_line(dropped) + "\n")
             self.runtime.trace.flush()
 
-    def _route_packet(self, packet: CspPacketView, envelope: TransportEnvelope) -> None:
+    def _route_packet(self, packet: PacketView, envelope: TransportEnvelope) -> None:
         command_route = self._command_route_for_packet(packet)
         if command_route is not None:
             self._deliver_command(command_route, packet, envelope)
@@ -833,7 +849,7 @@ class ScenarioRunner:
     def _deliver_command(
         self,
         route: _CommandRoute,
-        packet: CspPacketView,
+        packet: PacketView,
         envelope: TransportEnvelope,
     ) -> None:
         if route.target_node not in self.runtime.modules:
@@ -866,7 +882,7 @@ class ScenarioRunner:
                 f"command {route.source_node}.{route.command} was not handled by {route.target_node}"
             )
 
-    def _deliver_telemetry(self, route: _TelemetryRoute, packet: CspPacketView) -> None:
+    def _deliver_telemetry(self, route: _TelemetryRoute, packet: PacketView) -> None:
         try:
             value = decode_telemetry_value(route.field_name, route.mapping, packet.payload)
         except TelemetryCodecError as exc:
@@ -908,7 +924,7 @@ class ScenarioRunner:
             )
         return candidates[0]
 
-    def _command_route_for_packet(self, packet: CspPacketView) -> _CommandRoute | None:
+    def _command_route_for_packet(self, packet: PacketView) -> _CommandRoute | None:
         """Resolve the configured command route for an inbound CSP frame, if any.
 
         Returns ``None`` rather than raising when nothing matches: the caller
@@ -935,18 +951,11 @@ class ScenarioRunner:
             return None
         raise ScenarioRuntimeError("received CSP command frame matches multiple configured routes")
 
-    def _telemetry_route_for_packet(self, packet: CspPacketView) -> _TelemetryRoute | None:
+    def _telemetry_route_for_packet(self, packet: PacketView) -> _TelemetryRoute | None:
         """Resolve the configured telemetry route for an inbound CSP frame, if any."""
 
         fields = packet.fields
-        candidates = [
-            route
-            for route in self.runtime.telemetry_routes
-            if route.source_address == fields.source
-            and route.destination_address == fields.destination
-            and route.destination_port == fields.destination_port
-            and route.source_port == fields.source_port
-        ]
+        candidates = [route for route in self.runtime.telemetry_routes if route.matches(fields)]
         if len(candidates) == 1:
             return candidates[0]
         if not candidates:
@@ -1024,6 +1033,7 @@ def build_runtime(
             participant.address for participant in participants.values() if participant.is_simulated
         ),
         max_packet_bytes=max(node.max_packet_bytes for node in setup.nodes.values()),
+        protocol_version=setup.protocol_version,
     )
     bus_faults: FaultInjectingTransport | None = None
     if isinstance(transport, InMemoryBusAdapter):
@@ -1250,7 +1260,7 @@ def _build_frame_annotator(
     so it has to be able to report the unexpected rather than fail on it.
     """
 
-    def annotate(packet: CspPacketView) -> str | None:
+    def annotate(packet: PacketView) -> str | None:
         fields = packet.fields
         commands = [
             route
@@ -1268,14 +1278,7 @@ def _build_frame_annotator(
         if commands:
             return "command ambiguous-route"
 
-        telemetry = [
-            route
-            for route in telemetry_routes
-            if route.source_address == fields.source
-            and route.destination_address == fields.destination
-            and route.destination_port == fields.destination_port
-            and route.source_port == fields.source_port
-        ]
+        telemetry = [route for route in telemetry_routes if route.matches(fields)]
         if len(telemetry) == 1:
             return _telemetry_annotation(telemetry[0], packet.payload)
         if telemetry:
@@ -1356,7 +1359,10 @@ def _build_telemetry_routes(setup: TestbedConfig) -> tuple[_TelemetryRoute, ...]
                     node_name=node_name,
                     field_name=field_name,
                     source_address=node.address,
-                    destination_address=node.address,
+                    destination_address=(
+                        node.address if mapping.to is None else setup.nodes[mapping.to].address
+                    ),
+                    destination_named=mapping.to is not None,
                     destination_port=mapping.destination_port,
                     source_port=mapping.source_port,
                     priority=mapping.priority,

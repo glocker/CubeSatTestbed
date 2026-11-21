@@ -26,6 +26,7 @@ def build_transport_adapter(
     socketcan_send_timeout: float | None = 0.0,
     local_addresses: Iterable[int] = (),
     max_packet_bytes: int = 256,
+    protocol_version: int = 2,
 ) -> TransportAdapter:
     """Build the concrete transport adapter described by ``config``.
 
@@ -38,16 +39,20 @@ def build_transport_adapter(
     (``kiss``, ``zmq``): the CSP addresses of the nodes the testbed simulates
     (delivered locally, never put on the link) and the receive buffer applied to
     what is read from it.
+
+    ``protocol_version`` is the CSP version a CAN link (``in-memory``, ``socketcan``)
+    speaks; the whole-packet links carry CSP v2 only.
     """
 
     if isinstance(config, InMemoryTransportConfig):
-        return InMemoryBusAdapter(endpoints=endpoints)
+        return InMemoryBusAdapter(endpoints=endpoints, protocol_version=protocol_version)
     if isinstance(config, SocketCanTransportConfig):
         return SocketCanAdapter(
             interface=config.interface,
             receive_own_messages=config.receive_own_messages,
             send_timeout=socketcan_send_timeout,
             bus=socketcan_bus,
+            protocol_version=protocol_version,
         )
     if isinstance(config, KissTransportConfig):
         return KissAdapter.open(

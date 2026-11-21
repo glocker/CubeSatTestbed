@@ -45,6 +45,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TextIO
 
+from cubesat_testbed.protocol import csp_v1
+from cubesat_testbed.protocol.csp_v1 import CspV1CanFrame, CspV1CodecError, CspV1Reassembler
 from cubesat_testbed.protocol.csp_v2 import (
     CspCanFrame,
     CspCanIdFields,
@@ -54,7 +56,7 @@ from cubesat_testbed.protocol.csp_v2 import (
     decode_first_frame_header,
 )
 from cubesat_testbed.protocol.csp_v2 import decode_frame as _decode_frame
-from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame, CspPacketView
+from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame
 from cubesat_testbed.transport.base import (
     EndpointId,
     Frame,
@@ -63,8 +65,9 @@ from cubesat_testbed.transport.base import (
     TransportDrop,
     TransportEnvelope,
 )
+from cubesat_testbed.transport.can_protocol import CanProtocol, PacketView
 
-FrameAnnotator = Callable[[CspPacketView], str | None]
+FrameAnnotator = Callable[[PacketView], str | None]
 """Describe a decoded frame in terms of the configured route it matches.
 
 Returns a trailing annotation for the trace line (for example
@@ -97,6 +100,10 @@ class FrameRecord:
     cfp: str | None = None
     packet_count: int | None = None
     frame_count: int | None = None
+    remaining: int | None = None
+    """CSP v1 only: frames still to come after this one (the CFP1 remaining field)."""
+    identification: int | None = None
+    """CSP v1 only: the 10-bit CFP1 packet identification."""
     priority: int | None = None
     source: int | None = None
     destination: int | None = None
@@ -157,6 +164,10 @@ class TracingTransportAdapter(TransportAdapter):
             "TX": CspReassembler(max_packet_bytes=None),
             "RX": CspReassembler(max_packet_bytes=None),
         }
+        self._v1_reassemblers = {
+            "TX": CspV1Reassembler(max_packet_bytes=None),
+            "RX": CspV1Reassembler(max_packet_bytes=None),
+        }
         self._sending = False
         self._after_send: list[Callable[[], None]] = []
 
@@ -215,6 +226,12 @@ class TracingTransportAdapter(TransportAdapter):
         else:
             action()
 
+    @property
+    def can_protocol(self) -> CanProtocol:
+        """The wrapped adapter's CSP version."""
+
+        return self._inner.can_protocol
+
     def new_sender(self, *, max_packet_bytes: int = 256) -> PacketSender:
         """Ask the wrapped adapter: how a packet becomes frames depends on the link."""
 
@@ -247,6 +264,7 @@ class TracingTransportAdapter(TransportAdapter):
             now=self._now_value(),
             annotate=self._annotate,
             reassembler=self._reassemblers[direction],
+            v1_reassembler=self._v1_reassemblers[direction],
         )
         if self._stream is not None:
             self._stream.write(format_frame_record(record))
@@ -266,6 +284,7 @@ def format_trace_line(
     now: int | None = None,
     annotate: FrameAnnotator | None = None,
     reassembler: CspReassembler | None = None,
+    v1_reassembler: CspV1Reassembler | None = None,
 ) -> str:
     """Format one frame as a single ``key=value`` trace line.
 
@@ -281,7 +300,14 @@ def format_trace_line(
     """
 
     return format_frame_record(
-        describe_frame(direction, envelope, now=now, annotate=annotate, reassembler=reassembler)
+        describe_frame(
+            direction,
+            envelope,
+            now=now,
+            annotate=annotate,
+            reassembler=reassembler,
+            v1_reassembler=v1_reassembler,
+        )
     )
 
 
@@ -292,10 +318,15 @@ def describe_frame(
     now: int | None = None,
     annotate: FrameAnnotator | None = None,
     reassembler: CspReassembler | None = None,
+    v1_reassembler: CspV1Reassembler | None = None,
 ) -> FrameRecord:
     """Decode one frame into a :class:`FrameRecord`; never raises on a bad frame."""
 
     frame = envelope.frame
+    if isinstance(frame, CspV1CanFrame):
+        return _describe_v1_frame(
+            direction, frame, now=now, annotate=annotate, reassembler=v1_reassembler
+        )
     if isinstance(frame, CspPacketFrame):
         fields = frame.fields
         return FrameRecord(
@@ -344,6 +375,100 @@ def describe_frame(
         payload=packet.payload,
         annotation=None if annotate is None else annotate(packet),
         **base,  # type: ignore[arg-type]
+    )
+
+
+def _describe_v1_frame(
+    direction: str,
+    frame: CspV1CanFrame,
+    *,
+    now: int | None,
+    annotate: FrameAnnotator | None,
+    reassembler: CspV1Reassembler | None,
+) -> FrameRecord:
+    """Describe one CSP v1 CAN frame (CFP1); a packet of several frames is traced per frame.
+
+    Every v1 packet is framed by CFP1, so "a packet in one frame" here means a first frame
+    with nothing remaining. The line of a multi-frame packet's last frame carries the
+    reassembled payload, as for v2.
+    """
+
+    base = {
+        "direction": direction,
+        "time": now,
+        "can_id": frame.can_id,
+        "dlc": frame.dlc,
+        "data": frame.data,
+    }
+    if not frame.is_extended_id:
+        return FrameRecord(
+            kind="undecodable",
+            undecodable="CSP v1 over CAN requires an extended 29-bit CAN identifier",
+            **base,  # type: ignore[arg-type]
+        )
+    can_fields = csp_v1.decode_can_id(frame.can_id)
+
+    if can_fields.begin and can_fields.remaining == 0:
+        try:
+            packet = csp_v1.decode_frame(frame)
+        except CspV1CodecError as exc:
+            return FrameRecord(kind="undecodable", undecodable=str(exc), **base)  # type: ignore[arg-type]
+        fields = packet.fields
+        return FrameRecord(
+            kind="frame",
+            identification=can_fields.identification,
+            priority=fields.priority,
+            source=fields.source,
+            destination=fields.destination,
+            destination_port=fields.destination_port,
+            source_port=fields.source_port,
+            flags=fields.flags,
+            payload=packet.payload,
+            annotation=None if annotate is None else annotate(packet),
+            **base,  # type: ignore[arg-type]
+        )
+
+    position = "begin" if can_fields.begin else "end" if can_fields.remaining == 0 else "more"
+    cfp = {
+        "cfp": position,
+        "remaining": can_fields.remaining,
+        "identification": can_fields.identification,
+    }
+    header: dict[str, object]
+    if can_fields.begin:
+        try:
+            first = csp_v1.decode_first_frame_header(frame)
+        except CspV1CodecError as exc:
+            return FrameRecord(kind="undecodable", undecodable=str(exc), **base, **cfp)  # type: ignore[arg-type]
+        header = {
+            "priority": first.priority,
+            "source": first.source,
+            "destination": first.destination,
+            "destination_port": first.destination_port,
+            "source_port": first.source_port,
+            "flags": first.flags,
+        }
+    else:
+        header = {"destination": can_fields.destination, "sender": can_fields.source}
+
+    frames: int | None = None
+    payload: bytes | None = None
+    annotation: str | None = None
+    if reassembler is not None:
+        for event in reassembler.feed(frame, now=0 if now is None else now):
+            completed = event.packet
+            if event.kind == "complete" and completed is not None:
+                frames = completed.frame_count
+                payload = completed.payload
+                annotation = None if annotate is None else annotate(completed)
+    return FrameRecord(
+        kind="fragment",
+        frames=frames,
+        payload=payload,
+        annotation=annotation,
+        **base,  # type: ignore[arg-type]
+        **cfp,  # type: ignore[arg-type]
+        **header,  # type: ignore[arg-type]
     )
 
 
@@ -417,8 +542,12 @@ def format_frame_record(record: FrameRecord) -> str:
         parts.append(f"dlc={record.dlc}")
     if record.cfp is not None:
         parts.append(f"cfp={record.cfp}")
-        parts.append(f"pc={record.packet_count}")
-        parts.append(f"fc={record.frame_count}")
+        if record.remaining is not None:
+            parts.append(f"rem={record.remaining}")
+            parts.append(f"id={record.identification}")
+        else:
+            parts.append(f"pc={record.packet_count}")
+            parts.append(f"fc={record.frame_count}")
 
     if record.kind == "undecodable":
         parts.append(f"data={_hex(record.data)}")

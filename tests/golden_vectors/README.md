@@ -172,6 +172,48 @@ Committed fixture pairs must record:
 - raw CAN payload bytes, either in parsed fixture data or asserted by tests;
 - expected packet meaning.
 
+### CSP v1 over CAN vectors
+
+`csp_v1/can/` holds twenty vectors for CSP **v1** over CAN (CFP 1.x). They come from the same pinned libcsp `v2.1` build: the release speaks both
+protocol versions and picks one at run time, so `csp_client -v 1` is all it takes and no
+second libcsp is pinned. Unlike the v2 CAN vectors above, their `*.meta.toml` files are
+*written by* `scripts/regenerate-v1-can-vectors.py` (run by `regenerate-vectors.sh`, so CI
+regenerates and diffs captures and metadata alike). The script holds the table of what each
+vector asks `csp_client` for; the metadata splits into what was *asked* (addresses, priority,
+flags, payload length, packet count) and what libcsp *sent* (CAN IDs, frame data, headers,
+reassembled payloads), and `tests/test_golden_vectors_csp_v1.py` compares the two and checks
+the capture against the CFP1 layout, so the helper cannot become its own oracle. Regenerate
+with:
+
+```sh
+docker compose exec -T libcsp-vectors python3 /app/tests/golden_vectors/scripts/regenerate-v1-can-vectors.py
+```
+
+What the vectors show about libcsp `v2.1` running as CSP v1:
+
+- the CAN identifier is `source (5) | destination (5) | type (1) | remaining (8) |
+  identification (10)`; type is 0 for the first frame of a packet, 1 for the rest;
+- **every** packet is fragmented, even an empty one: the first frame carries the 4-byte
+  big-endian CSP header (priority 2, source 5, destination 5, destination port 6, source
+  port 6, flags 8), a 2-byte big-endian payload length and at most two payload bytes; later
+  frames carry up to eight. A packet fits one frame only up to two payload bytes (the v2
+  limit is four);
+- `remaining` counts the frames still to come, so the first frame says how many follow
+  (`multi_frame_200` runs 25 down to 0) and a lost frame shows as a gap in the countdown;
+- the 10-bit identification field is a per-interface packet counter: it is the same in every
+  frame of a packet and increases by one for the next packet (`multi_frame_two_packets`);
+- the CRC32 and HMAC trailers are four bytes appended to the payload and counted in the length
+  field, as in v2; both flags are single bits in the header's flags byte (`0x01`, `0x08`);
+- the source *port* in the header is chosen by libcsp (it counts connections) and is the one
+  header field `csp_client` does not control; the destination port is the ping port, 1;
+- addresses are 5 bits: `csp_client -v 1` refuses anything above 31, and 31 is the broadcast
+  address, so the highest usable pair is 30 and 29 (`high_address`). A source equal to the
+  destination is delivered by libcsp's loopback and never reaches the bus, so no vector uses it.
+
+Not captured, and why: RDP (stateful, as for v2); XTEA (removed from libcsp in 2.0, so `v2.1`
+has no way to send it); the 10-bit identification counter wrapping (it takes 1024 packets and
+`csp_client` sends at most eight per run); CSP v1 over KISS and over ZeroMQ (no vectors yet).
+
 ### KISS (serial) vectors
 
 `kiss/` holds the same kind of fixtures for CSP v2 over a serial line with KISS

@@ -6,7 +6,7 @@ and [`docs/roadmap.md`](roadmap.md) for what's implemented versus planned.
 
 ## Protocol support
 
-v1 implements **CSP v2 only**, targeting:
+v1 implements **CSP v2**, and **CSP v1 over CAN** (see [CSP v1](#csp-v1-over-can)), targeting:
 
 - libcsp-compatible CSP v2 packet pack/unpack;
 - classic CAN 2.0 frames with 8-byte data fields;
@@ -28,13 +28,13 @@ and [ZeroMQ transport](#zeromq-transport).
 
 Planned later, not implemented in v1:
 
-- CSP v1 for legacy hardware;
+- CSP v1 over a serial KISS line and a ZeroMQ hub;
 - raw CAN/DBC adapter;
 - custom mission codec plugin.
 
 This project does not reuse or expose the CAN wire protocol from the
 `AetherFlow` project; the signal codec design may reuse lessons learned there,
-but the v1 protocol layer is CSP v2 only.
+but the protocol layer is CSP v2, plus CSP v1 over CAN.
 
 ## Modules
 
@@ -335,8 +335,53 @@ A dropped packet does not fail the run by itself; an assertion that needed it
 does. Reassembly runs on virtual time, so the same frames at the same times give
 the same result on every run.
 
-Still out of scope: CSP v1, other physical layers (KISS, ZMQ), RDP, and a
-packet carrying several telemetry signals (each signal is still its own packet).
+Still out of scope: other physical layers, RDP, and a packet carrying several
+telemetry signals (each signal is still its own packet).
+
+## CSP v1 over CAN
+
+A setup selects exactly one CSP version for the whole run:
+
+```toml
+protocol_version = 1   # at the top of setup.toml; the default is 2
+
+[transport]
+type = "in-memory"     # or "socketcan"
+```
+
+With `protocol_version = 1` every node, command, telemetry signal and frame is CSP v1,
+framed for CAN by CFP 1.x. The two versions are different code paths that share no
+codec code (`protocol/csp_v1.py` and `protocol/csp_v2.py`) and are not meant to share a
+network, so a v1 packet is never decoded as v2 or the other way round, and a SocketCAN
+adapter refuses a frame of the other version. A v1 setup runs over the CAN links only
+(`in-memory`, `socketcan`); `kiss` and `zmq` are rejected when the setup loads.
+
+What differs from CSP v2, as libcsp `v2.1` run as CSP v1 shows in the committed vectors
+(`tests/golden_vectors/csp_v1/can/`, see the [vector README](../tests/golden_vectors/README.md)):
+
+- addresses are 5 bits (0-31) and **31 is the broadcast address**, so a node can be at most
+  30; setup validation says so. Ports (0-63), priorities and the CRC32/HMAC flags are as in v2;
+- the CSP header is 4 bytes, and **every** packet is fragmented, even an empty one: the first
+  frame carries the header, a 2-byte payload length and at most two payload bytes, later frames
+  up to eight. A packet fits one frame only up to two payload bytes (v2: four);
+- the CAN identifier carries source, destination, a first-frame/continuation bit, the number of
+  frames still to come (`rem=`) and a 10-bit packet identification (`id=`) that counts up per
+  sending node and wraps; there is no priority in it;
+- a packet is complete when as many bytes arrived as the length field declared. Frames are
+  matched to their packet by source, destination and identification; a gap in the `rem=`
+  countdown is a lost frame; an incomplete packet is dropped after one virtual second.
+
+Drops are reported exactly as for v2 (`frame_lost`, `orphan_fragment`, `overflow`, `timeout`,
+`restarted`, `malformed`, with the node and the limit), with one difference of detail: a packet
+longer than the receiving node's `max_packet_bytes` is refused at its *first* frame, since the
+length field announces it, and is reported once; its remaining frames are not reported again as
+strays. `--trace` shows v1 frames with `cfp=begin|more|end rem=N id=I` in place of v2's
+`pc=`/`fc=`, and the HTML report and `--json` carry them the same way. [Bus faults](#bus-faults)
+work on v1 frames too: a rule on a port reaches every frame of a packet.
+
+Not modelled: libcsp's loopback for a packet a node sends to its own address (a frame
+reaches the bus whatever its destination) and its rewrite of the broadcast address to the
+receiving node's own.
 
 ## Serial KISS transport
 
@@ -477,10 +522,40 @@ Two consequences worth knowing:
   assertion's `timeout` accordingly.
 
 `cubesat_testbed.protocol.telemetry_codec` bridges declarative config to the
-scalar-only signal codec. Telemetry frames are self-addressed
-(`destination == source`): v1 has no dedicated telemetry-sink node, and the
-in-memory bus's monitor queue already sees every frame regardless of
-destination, matching a promiscuous CAN bus analyzer.
+scalar-only signal codec.
+
+### Who a telemetry frame is addressed to
+
+A real node on a real bus only receives frames carrying its own CSP address (libcsp's
+SocketCAN driver filters on the destination field), so it matters who a telemetry frame is
+addressed to. A mapping may name the receiver with `to`:
+
+```toml
+[nodes.eps.telemetry.battery_percent]
+source_port = 10
+destination_port = 10
+to = "obc"             # the frame is sent src=eps dst=obc
+offset = 0
+length = 4
+type = "float"
+```
+
+- **A simulated node's telemetry** is sent to the node `to` names. Without `to` it is sent
+  to its own sender (`destination == source`): the in-memory bus's monitor queue sees every
+  frame whatever its destination, like a promiscuous bus analyzer, so that works for a
+  scenario that only watches the bus, but no other node on a real bus ever receives it. Set
+  `to` whenever a real node (or a `software` peer on a real link) has to receive the signal.
+- **A real node's telemetry** (a `hardware` or `software` node) is matched on the sender's
+  address and the two ports. Without `to` the destination is not looked at, so a board that
+  sends its housekeeping to the OBC (`src=2 dst=1`, the normal case) and one that addresses
+  itself are both read. With `to` only a frame addressed to that node counts.
+- `to` must name a configured node. It does not change the scenario's assertions, only the
+  frames.
+
+Mind the ports on a real libcsp node: it can only `csp_bind` ports up to
+`CSP_PORT_MAX_BIND` (16 in the default build), so a real OBC cannot listen for telemetry on
+the ports 20-22 the packaged examples use; pick a port a real receiver can bind when the
+receiver is real (`to` plus, say, `destination_port = 10`).
 
 Non-numeric telemetry (e.g. `power_status = "offline"`) declares an `enum`
 mapping raw integer wire values to labels, since the wire codec itself is

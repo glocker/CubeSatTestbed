@@ -18,6 +18,10 @@
 #define DEFAULT_DESTINATION_ADDRESS 2U
 #define DEFAULT_PRIORITY CSP_PRIO_NORM
 #define DEFAULT_PAYLOAD_LENGTH 1U
+#define DEFAULT_CSP_VERSION 2U
+/* CSP v1 addresses are 5 bits wide, CSP v2 addresses 14 bits. */
+#define CSP_V1_MAX_ADDRESS 0x1FU
+#define CSP_V2_MAX_ADDRESS 0x3FFFU
 /*
  * Largest payload the helper will send. libcsp's default packet buffer holds
  * 256 bytes (CSP_BUFFER_SIZE); staying well below it leaves room for the CRC32
@@ -44,6 +48,7 @@ struct options {
     uint16_t payload_length;
     uint16_t packet_count;
     uint8_t payload_base;
+    uint8_t csp_version;
     const char *kiss_device;
     const char *zmq_host;
     bool send_ping;
@@ -59,9 +64,9 @@ static void print_usage(FILE *stream, const char *program) {
     fprintf(stream,
             "Usage: %s -p [-c can-interface] [-a source-address] [-d destination-address]\n"
             "          [-r priority] [-l payload-length] [-o flag[,flag...]] [-n packets]\n"
-            "          [-b base-byte] [-k kiss-device] [-z zmq-host]\n"
+            "          [-b base-byte] [-v csp-version] [-k kiss-device] [-z zmq-host]\n"
             "\n"
-            "Generate libcsp CSP v2 SocketCAN traffic for repository golden vectors.\n"
+            "Generate libcsp CSP SocketCAN traffic for repository golden vectors.\n"
             "\n"
             "Options:\n"
             "  -p                      send CSP ping-port request(s); each becomes one CAN frame\n"
@@ -80,6 +85,9 @@ static void print_usage(FILE *stream, const char *program) {
             "                          incrementing CFP2 packet counter\n"
             "  -b <base-byte>          first payload byte (default: 0x%02x); later bytes increment,\n"
             "                          so e.g. 0xc0 puts KISS FEND/FESC bytes on the wire\n"
+            "  -v <csp-version>        CSP protocol version, 1 or 2 (default: %u); version 1 uses the\n"
+            "                          4-byte header, 5-bit addresses and CFP1 framing on CAN, so\n"
+            "                          addresses are limited to 0-%u\n"
             "  -k <kiss-device>        send over a KISS serial interface on this tty/pty instead of\n"
             "                          SocketCAN; -c is then ignored (%u baud)\n"
             "  -z <zmq-host>           send through a libcsp ZeroMQ hub (zmqproxy) on this host\n"
@@ -96,6 +104,8 @@ static void print_usage(FILE *stream, const char *program) {
             MAX_PACKET_COUNT,
             DEFAULT_PACKET_COUNT,
             PAYLOAD_BASE_BYTE,
+            DEFAULT_CSP_VERSION,
+            CSP_V1_MAX_ADDRESS,
             KISS_BAUDRATE);
 }
 
@@ -175,7 +185,7 @@ static bool parse_csp_opts(const char *value, uint32_t *result) {
 static bool parse_args(int argc, char **argv, struct options *options) {
     int opt;
     uint16_t parsed_u16;
-    while ((opt = getopt(argc, argv, "c:a:d:r:l:o:n:b:k:z:ph")) != -1) {
+    while ((opt = getopt(argc, argv, "c:a:d:r:l:o:n:b:v:k:z:ph")) != -1) {
         switch (opt) {
             case 'c':
                 options->can_interface = optarg;
@@ -225,6 +235,13 @@ static bool parse_args(int argc, char **argv, struct options *options) {
                 }
                 options->payload_base = (uint8_t)parsed_u16;
                 break;
+            case 'v':
+                if (!parse_u16(optarg, 2U, &parsed_u16) || (parsed_u16 == 0U)) {
+                    fprintf(stderr, "Invalid CSP version (1 or 2): %s\n", optarg);
+                    return false;
+                }
+                options->csp_version = (uint8_t)parsed_u16;
+                break;
             case 'k':
                 options->kiss_device = optarg;
                 break;
@@ -244,6 +261,22 @@ static bool parse_args(int argc, char **argv, struct options *options) {
 
     if (!options->send_ping) {
         fprintf(stderr, "No vector action selected; pass -p to send the ping-port vector.\n");
+        return false;
+    }
+
+    /*
+     * The address width depends on the version, and -v may come after -a/-d, so the
+     * range is checked once every option has been read.
+     */
+    const uint16_t max_address =
+        (options->csp_version == 1U) ? (uint16_t)CSP_V1_MAX_ADDRESS : (uint16_t)CSP_V2_MAX_ADDRESS;
+    if ((options->source_address > max_address) || (options->destination_address > max_address)) {
+        fprintf(stderr,
+                "Addresses must be 0-%u for CSP v%u (got source %u, destination %u).\n",
+                (unsigned)max_address,
+                (unsigned)options->csp_version,
+                (unsigned)options->source_address,
+                (unsigned)options->destination_address);
         return false;
     }
 
@@ -313,7 +346,7 @@ static int send_vector_packet(csp_iface_t *can_iface, const struct options *opti
 }
 
 /**
- * Configure libcsp for CSP v2 over SocketCAN and emit the selected golden-vector packet.
+ * Configure libcsp for CSP (v2 by default, v1 with -v 1) over SocketCAN and emit the selected golden-vector packet.
  *
  * @param argc Argument count from the process entry point.
  * @param argv Argument vector from the process entry point.
@@ -329,6 +362,7 @@ int main(int argc, char **argv) {
         .payload_length = DEFAULT_PAYLOAD_LENGTH,
         .packet_count = DEFAULT_PACKET_COUNT,
         .payload_base = PAYLOAD_BASE_BYTE,
+        .csp_version = DEFAULT_CSP_VERSION,
         .kiss_device = NULL,
         .zmq_host = NULL,
         .send_ping = false,
@@ -340,10 +374,11 @@ int main(int argc, char **argv) {
     }
 
     /*
-     * libcsp reads csp_conf.version during initialization; keep the helper pinned
-     * to CSP v2.
+     * libcsp reads csp_conf.version during initialization. The pinned v2.1 release
+     * speaks both protocol versions at run time, so the same build produces the CSP v1
+     * vectors; the default stays CSP v2 so every existing vector is regenerated unchanged.
      */
-    csp_conf.version = 2;
+    csp_conf.version = options.csp_version;
     csp_init();
 
     csp_iface_t *can_iface = NULL;

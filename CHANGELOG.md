@@ -9,6 +9,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- CSP v1 over CAN, selected from the setup with `protocol_version = 1` (default 2) and carried
+  by the `in-memory` and `socketcan` transports. The whole run is then CSP v1: the runner, the
+  OBC Peer, `--trace` (`cfp=begin|more|end rem=N id=I`), dropped packets, the HTML report and
+  bus faults all work on CFP1 frames. Setup validation refuses what v1 cannot carry: the
+  `kiss` and `zmq` transports, addresses above 30 and the broadcast address 31. A packet
+  longer than the receiving node's `max_packet_bytes` is reported once, at its first frame. A
+  SocketCAN adapter refuses a frame of the other protocol version. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#csp-v1-over-can).
+- `cubesat_testbed.protocol.csp_v1`: a libcsp-compatible CSP v1 codec for CAN. The 4-byte
+  big-endian header (5-bit addresses, 6-bit ports, 8 flag bits), CFP1 fragmentation
+  (`fragment_packet`, `CspV1Fragmenter`, whose 10-bit packet identification counts per node and
+  wraps) and reassembly in virtual time (`CspV1Reassembler`: remaining-frames countdown, length
+  field, one-second timeout, every drop reported with a reason). A separate code path that
+  shares nothing with the v2 codec, and is verified frame for frame against the CSP v1 golden
+  vectors.
 - CFP2 fragmentation and reassembly for CSP v2 over CAN. A packet longer than
   one CAN frame -- more than 4 payload bytes, or any payload with a CRC32/HMAC
   trailer -- is now sent as several frames and rebuilt at the receiver, as
@@ -79,6 +94,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed (internal)
 
+- CSP v1 over CAN golden vectors: twenty captures under `tests/golden_vectors/csp_v1/can/`,
+  taken on `vcan0` from the pinned libcsp `v2.1` (which speaks both protocol versions at run
+  time) through the new `csp_client -v 1`. They are regenerated and diffed in CI and verified
+  against the CFP1 layout by `tests/test_golden_vectors_csp_v1.py`.
 - The `--trace` line is now rendered from a structured `FrameRecord`
   (`transport.tracing.describe_frame` / `format_frame_record`) instead of being built as
   text directly; the output is unchanged. `TracingTransportAdapter` takes an optional
@@ -86,6 +105,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Telemetry was addressed to its own sender, so on a real bus it could not travel in either
+  direction. A real EPS that sends its housekeeping to the OBC (`src=2 dst=1`) matched no
+  telemetry route, was dropped as an unknown frame and left the assertion "never observed on
+  the bus"; and a simulated node's telemetry (`src=2 dst=2`) was filtered out by the CAN driver
+  of any real OBC. A telemetry mapping now takes `to = "<node>"`, which addresses a simulated
+  node's frames to that node, and a signal sent by a real node is matched on the sender's
+  address and the ports whatever the frame is addressed to (only a mapping that names `to`
+  also requires the destination). Without `to` a simulated node's telemetry is still sent to
+  itself, so existing setups behave as before. Reproduced and fixed on a real `vcan0` against
+  libcsp `v2.1` as both CSP v1 and v2, with new `socketcan` tests. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#who-a-telemetry-frame-is-addressed-to).
 - A configured command whose target is a `software`/`hardware` node no longer aborts
   the run with `simulated module '<node>' is not available`. Two situations triggered it:
   the testbed overhearing a real peer send that command to another real peer (on

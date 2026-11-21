@@ -1,8 +1,9 @@
 """Transport adapter boundary.
 
-Adapters carry CSP v2 traffic through the deterministic in-memory bus, Linux
-SocketCAN or a serial KISS line. What crosses the boundary is a :data:`Frame`:
-a :class:`~cubesat_testbed.protocol.csp_v2.CspCanFrame` on CAN links, where one
+Adapters carry CSP traffic through the deterministic in-memory bus, Linux
+SocketCAN, a serial KISS line or a ZeroMQ hub. What crosses the boundary is a :data:`Frame`:
+a CAN frame on CAN links (a :class:`~cubesat_testbed.protocol.csp_v2.CspCanFrame` for CSP v2 or
+a :class:`~cubesat_testbed.protocol.csp_v1.CspV1CanFrame` for CSP v1), where one
 CSP packet may span several frames, or a
 :class:`~cubesat_testbed.protocol.csp_v2_packet.CspPacketFrame` on links that
 carry a packet whole. Higher layers depend on this boundary rather than on a
@@ -16,17 +17,23 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Protocol, TypeAlias
 
+from cubesat_testbed.protocol.csp_v1 import CspV1CanFrame
 from cubesat_testbed.protocol.csp_v2 import (
     CSP_V2_DEFAULT_MAX_PACKET_BYTES,
     CspCanFrame,
     CspFields,
-    CspFragmenter,
     CspV2FrameError,
 )
 from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame
+from cubesat_testbed.transport.can_protocol import (
+    CSP_V2_CAN,
+    CanFrame,
+    CanPacketSender,
+    CanProtocol,
+)
 
 EndpointId = str | int
-Frame: TypeAlias = CspCanFrame | CspPacketFrame
+Frame: TypeAlias = CanFrame | CspPacketFrame
 
 
 class TransportError(RuntimeError):
@@ -53,7 +60,7 @@ class TransportEnvelope:
     def can_id(self) -> int:
         """Convenience access to a CAN frame's identifier (CAN links only)."""
 
-        if not isinstance(self.frame, CspCanFrame):
+        if not isinstance(self.frame, CspCanFrame | CspV1CanFrame):
             raise TransportError(
                 "this envelope carries a whole packet, which has no CAN identifier"
             )
@@ -63,7 +70,7 @@ class TransportEnvelope:
     def data(self) -> bytes:
         """Convenience access to a CAN frame's raw data bytes (CAN links only)."""
 
-        if not isinstance(self.frame, CspCanFrame):
+        if not isinstance(self.frame, CspCanFrame | CspV1CanFrame):
             raise TransportError(
                 "this envelope carries a whole packet, which has no CAN data field"
             )
@@ -81,16 +88,6 @@ class PacketSender(Protocol):
     def frames(self, fields: CspFields, payload: bytes) -> tuple[Frame, ...]:
         """Frames to send, in bus order; raises if the packet cannot be sent."""
         ...
-
-
-class CanPacketSender:
-    """CAN: one packet becomes one or several CFP2 frames."""
-
-    def __init__(self, *, max_packet_bytes: int = CSP_V2_DEFAULT_MAX_PACKET_BYTES) -> None:
-        self._fragmenter = CspFragmenter(max_packet_bytes=max_packet_bytes)
-
-    def frames(self, fields: CspFields, payload: bytes) -> tuple[Frame, ...]:
-        return self._fragmenter.fragment(fields, payload)
 
 
 class WholePacketSender:
@@ -147,16 +144,29 @@ class TransportAdapter(ABC):
     ignore ``timeout``.
     """
 
+    _can_protocol: CanProtocol = CSP_V2_CAN
+
+    @property
+    def can_protocol(self) -> CanProtocol:
+        """The CSP version a CAN adapter speaks (CSP v2 unless the setup selects v1).
+
+        Adapters for links that carry a packet whole have no CAN framing, and the value
+        means nothing for them.
+        """
+
+        return self._can_protocol
+
     def new_sender(
         self, *, max_packet_bytes: int = CSP_V2_DEFAULT_MAX_PACKET_BYTES
     ) -> PacketSender:
         """Create the transmit side of one node on this link.
 
-        The default is CAN: packets are fragmented into CFP2 frames. Adapters for
-        links that carry a packet whole override this.
+        The default is CAN: packets are fragmented into the frames of the adapter's CSP
+        version (CFP2 for v2, CFP1 for v1). Adapters for links that carry a packet whole
+        override this.
         """
 
-        return CanPacketSender(max_packet_bytes=max_packet_bytes)
+        return self.can_protocol.new_sender(max_packet_bytes=max_packet_bytes)
 
     def payload_limit(self, max_packet_bytes: int) -> int:
         """How many payload bytes fit a node's ``max_packet_bytes`` buffer on this link.

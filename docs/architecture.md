@@ -15,11 +15,13 @@ src/cubesat_testbed/
   scenario/assertions.py  # PASS/FAIL assertion primitives
   dut/manager.py          # Node mode -> DUT participant resolution
   protocol/csp_v2.py      # libcsp-compatible CSP v2 codec
+  protocol/csp_v1.py      # libcsp-compatible CSP v1 codec over CAN (CFP1), independent of csp_v2
   protocol/signal_codec.py    # Byte-aligned scalar signal codec
   protocol/telemetry_codec.py # Bridges TelemetryMapping config to signal_codec
   transport/base.py       # Bus adapter interface
   transport/factory.py    # Config-to-adapter construction
   transport/in_memory.py  # CI/local in-memory bus
+  transport/can_protocol.py # which CSP version a CAN link speaks: sender, reassembler, frame type
   transport/faults.py     # bus fault decorator: drop/delay/corrupt/duplicate/reorder frames
   transport/socketcan.py  # Linux SocketCAN adapter
   transport/kiss.py       # serial KISS adapter (whole CSP packets, local delivery)
@@ -60,7 +62,9 @@ src/cubesat_testbed/
      transport the setup configures.
 
 3. **Protocol and transport adapters**
-   - Protocol: v1 ships CSP v2 only.
+   - Protocol: CSP v2, and CSP v1 over CAN, selected per setup by `protocol_version`;
+     `transport/can_protocol.py` is the one place that knows both and hands the runtime what
+     differs (sender, reassembler, how a frame names its receiver).
    - Transport: v1 ships `InMemoryBusAdapter`, `SocketCanAdapter`, `KissAdapter`
      and `ZmqAdapter`, built from setup config by
      `transport.factory.build_transport_adapter`. What crosses the boundary is a

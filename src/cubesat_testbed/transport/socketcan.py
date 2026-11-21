@@ -15,7 +15,8 @@ from typing import Protocol, Self, cast
 
 import can
 
-from cubesat_testbed.protocol.csp_v2 import CspCanFrame, CspV2CodecError
+from cubesat_testbed.protocol.csp_v1 import CspV1CodecError
+from cubesat_testbed.protocol.csp_v2 import CspV2CodecError
 from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame
 from cubesat_testbed.transport.base import (
     EndpointId,
@@ -25,6 +26,7 @@ from cubesat_testbed.transport.base import (
     TransportEnvelope,
     TransportError,
 )
+from cubesat_testbed.transport.can_protocol import CanFrame, CanProtocol, can_protocol_for
 
 _INTERFACE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
@@ -59,7 +61,9 @@ class SocketCanAdapter(TransportAdapter):
         receive_own_messages: bool = False,
         send_timeout: float | None = 0.0,
         bus: CanBusLike | None = None,
+        protocol_version: int = 2,
     ) -> None:
+        self._can_protocol = can_protocol_for(protocol_version)
         self.interface = _validate_interface(interface)
         self.receive_own_messages = _validate_bool("receive_own_messages", receive_own_messages)
         self.send_timeout = _validate_optional_timeout("send_timeout", send_timeout)
@@ -97,9 +101,17 @@ class SocketCanAdapter(TransportAdapter):
         self._ensure_open()
         if isinstance(frame, CspPacketFrame):
             raise TransportError("SocketCAN carries CAN frames, not whole CSP packets")
+        if not isinstance(frame, self._can_protocol.frame_class):
+            raise TransportError(
+                f"this SocketCAN adapter speaks CSP v{self._can_protocol.version}; "
+                f"it cannot send a {type(frame).__name__}"
+            )
         validated_source = None if source is None else _validate_endpoint(source)
         if not frame.is_extended_id:
-            raise TransportError("SocketCAN CSP v2 path requires extended 29-bit CAN identifiers")
+            raise TransportError(
+                f"SocketCAN CSP v{self._can_protocol.version} path requires extended 29-bit "
+                "CAN identifiers"
+            )
 
         message = _message_from_frame(frame, channel=self.interface)
         try:
@@ -141,7 +153,7 @@ class SocketCanAdapter(TransportAdapter):
         if message is None:
             return None
 
-        frame = _frame_from_message(message)
+        frame = _frame_from_message(message, self._can_protocol)
         return self._envelope(frame, source=None)
 
     def close(self) -> None:
@@ -171,7 +183,7 @@ class SocketCanAdapter(TransportAdapter):
 
     def _envelope(
         self,
-        frame: CspCanFrame,
+        frame: CanFrame,
         *,
         source: EndpointId | None,
     ) -> TransportEnvelope:
@@ -199,7 +211,7 @@ def _open_socketcan_bus(interface: str, *, receive_own_messages: bool) -> CanBus
         raise TransportError(f"failed to open SocketCAN interface {interface!r}: {exc}") from exc
 
 
-def _message_from_frame(frame: CspCanFrame, *, channel: str) -> can.Message:
+def _message_from_frame(frame: CanFrame, *, channel: str) -> can.Message:
     try:
         return can.Message(
             arbitration_id=frame.can_id,
@@ -219,25 +231,24 @@ def _message_from_frame(frame: CspCanFrame, *, channel: str) -> can.Message:
         ) from exc
 
 
-def _frame_from_message(message: can.Message) -> CspCanFrame:
+def _frame_from_message(message: can.Message, protocol: CanProtocol) -> CanFrame:
+    version = protocol.version
     if message.is_error_frame:
-        raise TransportError("SocketCAN error frames are outside the CSP v2 HIL path")
+        raise TransportError(f"SocketCAN error frames are outside the CSP v{version} HIL path")
     if message.is_remote_frame:
-        raise TransportError("SocketCAN remote frames are outside the CSP v2 HIL path")
+        raise TransportError(f"SocketCAN remote frames are outside the CSP v{version} HIL path")
     if message.is_fd:
-        raise TransportError("CAN FD frames are outside the classic CAN 2.0 v1 profile")
+        raise TransportError("CAN FD frames are outside the classic CAN 2.0 profile")
     if not message.is_extended_id:
-        raise TransportError("SocketCAN CSP v2 path requires extended 29-bit CAN identifiers")
+        raise TransportError(
+            f"SocketCAN CSP v{version} path requires extended 29-bit CAN identifiers"
+        )
 
     try:
-        return CspCanFrame(
-            can_id=message.arbitration_id,
-            data=bytes(message.data),
-            is_extended_id=True,
-        )
-    except CspV2CodecError as exc:
+        return protocol.frame_from_can(message.arbitration_id, bytes(message.data))
+    except (CspV2CodecError, CspV1CodecError) as exc:
         raise TransportError(
-            f"received SocketCAN frame is outside the CSP v2 profile: {exc}"
+            f"received SocketCAN frame is outside the CSP v{version} profile: {exc}"
         ) from exc
 
 

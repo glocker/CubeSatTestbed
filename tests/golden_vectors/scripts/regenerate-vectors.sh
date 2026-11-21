@@ -71,6 +71,10 @@ generate_frames multi_frame_two_packets 4 -d 2 -l 12 -n 2
 
 echo "Regenerated $(ls "${VECTOR_DIR}"/*.txt | wc -l) golden vector captures in ${VECTOR_DIR}."
 
+# The CSP v1 over CAN vectors (CFP1 framing) live in csp_v1/can/ and need vcan0 too; the
+# pinned libcsp serves both protocol versions, selected by csp_client -v.
+python3 "${VECTOR_DIR}/scripts/regenerate-v1-can-vectors.py"
+
 # The serial (KISS) vectors live in kiss/ and need no vcan0.
 "${VECTOR_DIR}/scripts/regenerate-kiss-vectors.sh"
 

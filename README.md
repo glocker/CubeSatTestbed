@@ -319,6 +319,12 @@ straight through virtual time and a real board never gets wall-clock time to
 answer. A `socketcan` setup run without the flag therefore warns on `stderr`.
 Under `--realtime`, a scenario that waits `30s` really does take 30 seconds.
 
+Who a frame is addressed to matters on a real bus, because a real node only receives frames
+carrying its own CSP address. For the telemetry of a *simulated* node that a real OBC (or any
+other real node) has to receive, name the receiver in the mapping with `to = "obc"`; a *real*
+board's telemetry is matched whatever it is addressed to unless you name a node. Details in
+[`docs/v1-scope.md`](docs/v1-scope.md#who-a-telemetry-frame-is-addressed-to).
+
 Add `--trace` when a HIL run misbehaves: on SocketCAN the adapter never
 receives its own messages, so the trace is the only place both what the
 testbed sent and what the board answered show up side by side.
@@ -333,8 +339,10 @@ sudo ip link set up vcan0
 
 ## v1 scope at a glance
 
-- Protocol: CSP v2 only, classic CAN 2.0, extended 29-bit IDs, with CFP2
-  fragmentation for packets longer than one CAN frame.
+- Protocol: CSP v2 (CFP2 fragmentation for packets longer than one CAN frame) or CSP v1
+  over CAN (`protocol_version = 1` in the setup, CFP1 framing, 5-bit addresses); classic
+  CAN 2.0, extended 29-bit IDs. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#csp-v1-over-can).
 - Modules: Generic EPS, OBC Peer (rule engine), Simple Payload, RC thermal
   node -- plus your own, registered the same way the built-ins are
   ([`docs/writing-a-module.md`](docs/writing-a-module.md)).

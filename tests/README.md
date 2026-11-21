@@ -10,6 +10,9 @@ Coverage:
   - CAN: single-frame and multi-frame (CFP2) vectors on `vcan0`
     (`tests/golden_vectors/*.txt`), plus fragmentation and reassembly tests
     (`test_csp_v2.py`, `test_csp_v2_cfp.py`);
+  - CSP v1 over CAN (CFP1), captured from the same libcsp build run as v1
+    (`tests/golden_vectors/csp_v1/can/`, `test_golden_vectors_csp_v1.py`); the vectors are
+    checked here against the CFP1 layout, independently of any codec;
   - serial KISS on a pty (`tests/golden_vectors/kiss/`, `test_csp_v2_kiss.py`);
   - ZeroMQ through libcsp's own hub (`tests/golden_vectors/zmq/`,
     `test_csp_v2_zmq.py`);
