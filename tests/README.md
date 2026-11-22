@@ -13,6 +13,9 @@ Coverage:
   - CSP v1 over CAN (CFP1), captured from the same libcsp build run as v1
     (`tests/golden_vectors/csp_v1/can/`, `test_golden_vectors_csp_v1.py`); the vectors are
     checked here against the CFP1 layout, independently of any codec;
+  - CSP v1 over KISS and ZeroMQ (`tests/golden_vectors/csp_v1/{kiss,zmq}/`,
+    `test_golden_vectors_csp_v1_whole_packet.py`, codecs and adapters in
+    `test_csp_v1_whole_packet.py`);
   - serial KISS on a pty (`tests/golden_vectors/kiss/`, `test_csp_v2_kiss.py`);
   - ZeroMQ through libcsp's own hub (`tests/golden_vectors/zmq/`,
     `test_csp_v2_zmq.py`);

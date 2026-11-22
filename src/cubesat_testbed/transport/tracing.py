@@ -56,7 +56,6 @@ from cubesat_testbed.protocol.csp_v2 import (
     decode_first_frame_header,
 )
 from cubesat_testbed.protocol.csp_v2 import decode_frame as _decode_frame
-from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame
 from cubesat_testbed.transport.base import (
     EndpointId,
     Frame,
@@ -66,6 +65,7 @@ from cubesat_testbed.transport.base import (
     TransportEnvelope,
 )
 from cubesat_testbed.transport.can_protocol import CanProtocol, PacketView
+from cubesat_testbed.transport.whole_packet_protocol import WHOLE_PACKET_FRAMES
 
 FrameAnnotator = Callable[[PacketView], str | None]
 """Describe a decoded frame in terms of the configured route it matches.
@@ -327,7 +327,7 @@ def describe_frame(
         return _describe_v1_frame(
             direction, frame, now=now, annotate=annotate, reassembler=v1_reassembler
         )
-    if isinstance(frame, CspPacketFrame):
+    if isinstance(frame, WHOLE_PACKET_FRAMES):
         fields = frame.fields
         return FrameRecord(
             direction=direction,

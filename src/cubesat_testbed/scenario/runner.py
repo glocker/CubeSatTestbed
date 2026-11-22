@@ -55,7 +55,6 @@ from cubesat_testbed.protocol.csp_v2 import (
     CSP_V2_DEFAULT_MAX_PACKET_BYTES,
     CspFields,
 )
-from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame
 from cubesat_testbed.protocol.telemetry_codec import (
     TelemetryCodecError,
     decode_telemetry_value,
@@ -89,6 +88,7 @@ from cubesat_testbed.transport.faults import (
     format_bus_fault_trace_line,
 )
 from cubesat_testbed.transport.tracing import TRACE_PREFIX
+from cubesat_testbed.transport.whole_packet_protocol import WHOLE_PACKET_FRAMES, WholePacketFrame
 
 _PHYSICAL_STEP_US: VirtualTime = 1_000_000
 """Fixed cadence, in microseconds, of the runner's tick/telemetry/cycle step.
@@ -728,7 +728,7 @@ class ScenarioRunner:
         """
 
         frame = envelope.frame
-        if isinstance(frame, CspPacketFrame):
+        if isinstance(frame, WHOLE_PACKET_FRAMES):
             self._deliver_whole_packet(frame, envelope)
             return
         destination = self.runtime.transport.can_protocol.frame_destination(frame)
@@ -739,7 +739,7 @@ class ScenarioRunner:
             elif event.kind == "complete" and event.packet is not None:
                 self._route_packet(event.packet, envelope)
 
-    def _deliver_whole_packet(self, packet: CspPacketFrame, envelope: TransportEnvelope) -> None:
+    def _deliver_whole_packet(self, packet: WholePacketFrame, envelope: TransportEnvelope) -> None:
         """Route a packet a link delivered whole, if it fits the receiving node."""
 
         destination = packet.fields.destination

@@ -17,7 +17,6 @@ import can
 
 from cubesat_testbed.protocol.csp_v1 import CspV1CodecError
 from cubesat_testbed.protocol.csp_v2 import CspV2CodecError
-from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame
 from cubesat_testbed.transport.base import (
     EndpointId,
     Frame,
@@ -27,6 +26,7 @@ from cubesat_testbed.transport.base import (
     TransportError,
 )
 from cubesat_testbed.transport.can_protocol import CanFrame, CanProtocol, can_protocol_for
+from cubesat_testbed.transport.whole_packet_protocol import WHOLE_PACKET_FRAMES
 
 _INTERFACE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
@@ -99,7 +99,7 @@ class SocketCanAdapter(TransportAdapter):
         """Send one extended classic CAN frame through SocketCAN."""
 
         self._ensure_open()
-        if isinstance(frame, CspPacketFrame):
+        if isinstance(frame, WHOLE_PACKET_FRAMES):
             raise TransportError("SocketCAN carries CAN frames, not whole CSP packets")
         if not isinstance(frame, self._can_protocol.frame_class):
             raise TransportError(

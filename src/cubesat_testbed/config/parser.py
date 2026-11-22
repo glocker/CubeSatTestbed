@@ -683,11 +683,6 @@ class TestbedConfig(BaseModel):
     def _validate_protocol_version(self) -> None:
         if self.protocol_version != 1:
             return
-        if isinstance(self.transport, KissTransportConfig | ZmqTransportConfig):
-            raise ValueError(  # noqa: TRY004 - pydantic validators report ValueError
-                "protocol_version = 1 runs over a CAN link (transport.type 'in-memory' or "
-                f"'socketcan'); {self.transport.type!r} carries CSP v2 only"
-            )
         for node_name, node in self.nodes.items():
             if node.address > CSP_V1_ADDRESS_MAX:
                 raise ValueError(

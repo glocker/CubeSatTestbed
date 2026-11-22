@@ -214,6 +214,35 @@ Not captured, and why: RDP (stateful, as for v2); XTEA (removed from libcsp in 2
 has no way to send it); the 10-bit identification counter wrapping (it takes 1024 packets and
 `csp_client` sends at most eight per run); CSP v1 over KISS and over ZeroMQ (no vectors yet).
 
+### CSP v1 over KISS and ZeroMQ vectors
+
+`csp_v1/kiss/` (thirteen vectors) and `csp_v1/zmq/` (eleven) hold CSP **v1** for the links that
+carry a packet whole, from the same pinned libcsp `v2.1` run as CSP v1 (`csp_client -v 1 -k` and
+`-z`). Their `*.meta.toml` files are written by `scripts/regenerate-v1-whole-packet-vectors.py`
+(run by `regenerate-vectors.sh`; no `vcan0` needed, only a pty and libcsp's own `zmqproxy`), which
+refuses to write a vector whose wire bytes disagree with what it asked `csp_client` for. As for
+CAN, the metadata keeps what was *asked* apart from what libcsp *sent*, and
+`tests/test_golden_vectors_csp_v1_whole_packet.py` compares them and checks the layout. Regenerate
+with:
+
+```sh
+docker compose exec -T libcsp-vectors python3 /app/tests/golden_vectors/scripts/regenerate-v1-whole-packet-vectors.py
+```
+
+What the vectors show about libcsp `v2.1` running as CSP v1:
+
+- **KISS** is the v2 framing with the 4-byte header: `C0 00 <escaped: header(4) payload crc32c(4)> C0`,
+  `DB DC`/`DB DD` escaping, the CRC-32C appended to every frame whether or not `CSP_FLAG_CRC32` is
+  set (that flag then gives two checksums), no fragmentation. The header is big-endian: priority 2,
+  source 5, destination 5, destination port 6, source port 6, flags 8;
+- **ZeroMQ** is `<destination address (1)> <header(4)> <payload>`: the first byte is the destination
+  address, which libcsp uses as the topic, and it is stripped on receipt without being compared with
+  the header. There is no framing and no checksum of the link's own;
+- the header is **big-endian** on both links, as on CAN (a libcsp fork pull request,
+  EmOne/libcsp #5, says v1's ZeroMQ interface once used host byte order; the pinned `v2.1` does not);
+- as on CAN, the source port is the one header field `csp_client` does not choose (libcsp numbers its
+  connections), and the highest usable address is 30 (31 is the broadcast address).
+
 ### KISS (serial) vectors
 
 `kiss/` holds the same kind of fixtures for CSP v2 over a serial line with KISS

@@ -103,17 +103,17 @@ verified in CI before any codec or adapter code.
        virtual duration, flip a byte, duplicate a frame or deliver it after the next
        one, on send or on receive, with a seed. Two runs with one seed give
        byte-identical traces and `--trace` marks every injected fault.
-6. [x] **CSP v1 over CAN.** `protocol_version = 1` in the setup runs the whole scenario on
-       CFP1 frames (5-bit addresses, 4-byte header, every packet framed), over the in-memory
-       bus and SocketCAN, with trace, drops, the HTML report and bus faults. Twenty golden
-       vectors from libcsp `v2.1` run as CSP v1 pin the layout; the v1 and v2 codecs share
-       no code.
+6. [x] **CSP v1.** `protocol_version = 1` in the setup runs the whole scenario as CSP v1
+       (5-bit addresses, 4-byte header): CFP1 frames over the in-memory bus and SocketCAN,
+       one frame or message per packet over KISS and ZeroMQ, with trace, drops, the HTML
+       report and (in-memory) bus faults. Forty-four golden vectors from libcsp `v2.1` run as
+       CSP v1 pin the layouts, and a real libcsp process exchanged packets with the testbed
+       on all three links; the v1 and v2 codecs share no code.
 
 ## Next
 
-1. [ ] **CSP v1 over a serial KISS line and a ZeroMQ hub.** CSP v1 already runs over CAN;
-       the whole-packet links still carry CSP v2 only. Golden vectors first, adapters after,
-       as for v2; the byte order of the v1 ZeroMQ identifier is the open detail.
+No further protocol work is planned. What is next is tracked in the project backlog
+(`AGENTS.md`).
 
 ## Deferred
 

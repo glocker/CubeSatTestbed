@@ -24,7 +24,6 @@ from collections import deque
 from collections.abc import Iterable
 
 from cubesat_testbed.protocol.csp_v2 import CSP_V2_DEFAULT_MAX_PACKET_BYTES
-from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame
 from cubesat_testbed.transport.base import (
     EndpointId,
     Frame,
@@ -34,7 +33,12 @@ from cubesat_testbed.transport.base import (
     TransportEndpointError,
     TransportEnvelope,
     TransportError,
+)
+from cubesat_testbed.transport.whole_packet_protocol import (
+    WHOLE_PACKET_FRAMES,
+    WholePacketFrame,
     WholePacketSender,
+    whole_packet_protocol_for,
 )
 
 
@@ -45,6 +49,7 @@ class WholePacketAdapter(TransportAdapter):
     each is also the endpoint id of its receive queue. ``max_packet_bytes`` is the
     receive buffer applied to what arrives on the link (the largest of the nodes'
     limits); each destination node's own limit is enforced again by the runner.
+    ``protocol_version`` is the CSP version the link speaks (2 unless the setup selects 1).
     """
 
     link_name: str = ""
@@ -55,7 +60,9 @@ class WholePacketAdapter(TransportAdapter):
         *,
         local_addresses: Iterable[int] = (),
         max_packet_bytes: int = CSP_V2_DEFAULT_MAX_PACKET_BYTES,
+        protocol_version: int = 2,
     ) -> None:
+        self._protocol = whole_packet_protocol_for(protocol_version)
         self._local_addresses = frozenset(local_addresses)
         self._max_packet_bytes = max_packet_bytes
         self._monitor: deque[TransportEnvelope] = deque()
@@ -69,11 +76,11 @@ class WholePacketAdapter(TransportAdapter):
     # --- what a link provides -------------------------------------------------------
 
     @abstractmethod
-    def _emit(self, packet: CspPacketFrame) -> CspPacketFrame:
+    def _emit(self, packet: WholePacketFrame) -> WholePacketFrame:
         """Put a packet on the link; return it with ``wire`` and ``link`` filled in."""
 
     @abstractmethod
-    def _poll(self, timeout: float) -> Iterable[CspPacketFrame | TransportDrop]:
+    def _poll(self, timeout: float) -> Iterable[WholePacketFrame | TransportDrop]:
         """Read what the link has delivered, waiting up to ``timeout`` seconds for some.
 
         Returns the packets that arrived and the frames the link rejected, in order.
@@ -89,6 +96,7 @@ class WholePacketAdapter(TransportAdapter):
         self, *, max_packet_bytes: int = CSP_V2_DEFAULT_MAX_PACKET_BYTES
     ) -> PacketSender:
         return WholePacketSender(
+            self._protocol,
             max_packet_bytes=max_packet_bytes,
             payload_limit=self.payload_limit(max_packet_bytes),
         )
@@ -107,9 +115,14 @@ class WholePacketAdapter(TransportAdapter):
         """Deliver a packet locally, or put it on the link."""
 
         self._ensure_open()
-        if not isinstance(frame, CspPacketFrame):
+        if not isinstance(frame, WHOLE_PACKET_FRAMES):
             raise TransportError(
                 f"the {self.link_name} transport carries whole CSP packets, not CAN frames"
+            )
+        if not isinstance(frame, self._protocol.frame_class):
+            raise TransportError(
+                f"this {self.link_name} adapter speaks CSP v{self._protocol.version}; "
+                f"it cannot send a {type(frame).__name__}"
             )
         if frame.fields.destination in self._local_addresses:
             return self._deliver(frame, source=source)
@@ -151,12 +164,12 @@ class WholePacketAdapter(TransportAdapter):
             else:
                 self._deliver(item, source=None)
 
-    def _envelope(self, frame: CspPacketFrame, *, source: EndpointId | None) -> TransportEnvelope:
+    def _envelope(self, frame: WholePacketFrame, *, source: EndpointId | None) -> TransportEnvelope:
         envelope = TransportEnvelope(frame=frame, sequence=self._next_sequence, source=source)
         self._next_sequence += 1
         return envelope
 
-    def _deliver(self, frame: CspPacketFrame, *, source: EndpointId | None) -> TransportEnvelope:
+    def _deliver(self, frame: WholePacketFrame, *, source: EndpointId | None) -> TransportEnvelope:
         """Queue a packet for the monitor and for the local node it is addressed to."""
 
         envelope = self._envelope(frame, source=source)

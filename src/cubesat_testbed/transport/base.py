@@ -18,11 +18,11 @@ from dataclasses import dataclass
 from typing import Protocol, TypeAlias
 
 from cubesat_testbed.protocol.csp_v1 import CspV1CanFrame
+from cubesat_testbed.protocol.csp_v1_packet import CspV1PacketFrame
 from cubesat_testbed.protocol.csp_v2 import (
     CSP_V2_DEFAULT_MAX_PACKET_BYTES,
     CspCanFrame,
     CspFields,
-    CspV2FrameError,
 )
 from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame
 from cubesat_testbed.transport.can_protocol import (
@@ -33,7 +33,7 @@ from cubesat_testbed.transport.can_protocol import (
 )
 
 EndpointId = str | int
-Frame: TypeAlias = CanFrame | CspPacketFrame
+Frame: TypeAlias = CanFrame | CspPacketFrame | CspV1PacketFrame
 
 
 class TransportError(RuntimeError):
@@ -88,32 +88,6 @@ class PacketSender(Protocol):
     def frames(self, fields: CspFields, payload: bytes) -> tuple[Frame, ...]:
         """Frames to send, in bus order; raises if the packet cannot be sent."""
         ...
-
-
-class WholePacketSender:
-    """Links that carry a packet whole: one packet is exactly one frame.
-
-    ``max_packet_bytes`` is the node's packet buffer. ``payload_limit`` is how much
-    payload actually fits it on this link, which is less when the link puts its own
-    bytes in the same buffer (the KISS CRC32); it defaults to ``max_packet_bytes``.
-    """
-
-    def __init__(
-        self,
-        *,
-        max_packet_bytes: int = CSP_V2_DEFAULT_MAX_PACKET_BYTES,
-        payload_limit: int | None = None,
-    ) -> None:
-        self.max_packet_bytes = max_packet_bytes
-        self.payload_limit = max_packet_bytes if payload_limit is None else payload_limit
-
-    def frames(self, fields: CspFields, payload: bytes) -> tuple[Frame, ...]:
-        if len(payload) > self.payload_limit:
-            raise CspV2FrameError(
-                f"CSP payload of {len(payload)} bytes exceeds the sender's limit of "
-                f"{self.payload_limit} bytes (max_packet_bytes={self.max_packet_bytes})"
-            )
-        return (CspPacketFrame(fields=fields, payload=payload),)
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,5 +228,4 @@ __all__ = [
     "TransportEndpointError",
     "TransportEnvelope",
     "TransportError",
-    "WholePacketSender",
 ]

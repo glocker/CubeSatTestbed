@@ -40,8 +40,7 @@ def build_transport_adapter(
     (delivered locally, never put on the link) and the receive buffer applied to
     what is read from it.
 
-    ``protocol_version`` is the CSP version a CAN link (``in-memory``, ``socketcan``)
-    speaks; the whole-packet links carry CSP v2 only.
+    ``protocol_version`` is the CSP version the link speaks: v1 or v2 on every transport.
     """
 
     if isinstance(config, InMemoryTransportConfig):
@@ -60,6 +59,7 @@ def build_transport_adapter(
             baudrate=config.baudrate,
             local_addresses=local_addresses,
             max_packet_bytes=max_packet_bytes,
+            protocol_version=protocol_version,
         )
     if isinstance(config, ZmqTransportConfig):
         return ZmqAdapter.open(
@@ -68,6 +68,7 @@ def build_transport_adapter(
             settle_seconds=config.settle_seconds,
             local_addresses=local_addresses,
             max_packet_bytes=max_packet_bytes,
+            protocol_version=protocol_version,
         )
     raise TypeError(f"unsupported transport config type {type(config).__name__}")
 
