@@ -88,6 +88,7 @@ them, and refuses to overwrite existing files unless you pass `--force`.
 ```text
 default        in-memory three-node satellite; OBC sheds the payload on a low battery
 socketcan-hil  the same run against a real bus: payload as hardware on SocketCAN vcan0
+csp-v1         the same satellite as CSP v1: CFP1 framing, 5-bit addresses, telemetry sent to the OBC
 module-params  retuning a built-in module through [nodes.<node>.params]
 ```
 
@@ -340,9 +341,9 @@ sudo ip link set up vcan0
 ## v1 scope at a glance
 
 - Protocol: CSP v2 (CFP2 fragmentation for packets longer than one CAN frame) or CSP v1
-  over CAN (`protocol_version = 1` in the setup, CFP1 framing, 5-bit addresses); classic
-  CAN 2.0, extended 29-bit IDs. See
-  [`docs/v1-scope.md`](docs/v1-scope.md#csp-v1-over-can).
+  (`protocol_version = 1` in the setup: CFP1 framing on CAN, 5-bit addresses), over CAN,
+  a KISS serial line or a ZeroMQ hub; classic CAN 2.0, extended 29-bit IDs. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#csp-v1).
 - Modules: Generic EPS, OBC Peer (rule engine), Simple Payload, RC thermal
   node -- plus your own, registered the same way the built-ins are
   ([`docs/writing-a-module.md`](docs/writing-a-module.md)).

@@ -1,0 +1,24 @@
+name: "EPS Low Battery Protection Test (CSP v1)"
+description: "The same protection rule as the default example, carried by CSP v1 frames"
+
+steps:
+  - action: "inject_fault"
+    type: "state_override"
+    target: "eps.model.battery_percent"
+    value: 25
+    duration: "5s"
+
+  - action: "wait"
+    virtual_time: "3s"
+
+  - action: "assert"
+    signal: "eps.telemetry.battery_percent"
+    op: "=="
+    value: 25.0
+    timeout: "1s"
+
+  - action: "assert"
+    signal: "payload.telemetry.power_status"
+    op: "=="
+    value: "offline"
+    timeout: "1s"

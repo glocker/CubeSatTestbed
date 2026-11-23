@@ -21,20 +21,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from cubesat_testbed.protocol.csp_v2 import CSP_V2_DEFAULT_MAX_PACKET_BYTES, CspV2CodecError
-from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame
-from cubesat_testbed.protocol.csp_v2_zmq import (
-    ZMQ_LINK,
-    decode_zmq_message,
-    encode_zmq_message,
-)
+from cubesat_testbed.protocol.csp_v2 import CSP_V2_DEFAULT_MAX_PACKET_BYTES
+from cubesat_testbed.protocol.csp_v2_zmq import ZMQ_LINK
 from cubesat_testbed.transport.base import TransportDrop, TransportError
 from cubesat_testbed.transport.whole_packet import WholePacketAdapter
+from cubesat_testbed.transport.whole_packet_protocol import CodecError, WholePacketFrame
 from cubesat_testbed.transport.zmq_link import MessageLink, PyzmqMessageLink
 
 
 class ZmqAdapter(WholePacketAdapter):
-    """CSP v2 through a ZeroMQ hub, with local delivery for simulated nodes."""
+    """CSP through a ZeroMQ hub, with local delivery for simulated nodes."""
 
     link_name = "ZMQ"
 
@@ -44,8 +40,13 @@ class ZmqAdapter(WholePacketAdapter):
         *,
         local_addresses: Iterable[int] = (),
         max_packet_bytes: int = CSP_V2_DEFAULT_MAX_PACKET_BYTES,
+        protocol_version: int = 2,
     ) -> None:
-        super().__init__(local_addresses=local_addresses, max_packet_bytes=max_packet_bytes)
+        super().__init__(
+            local_addresses=local_addresses,
+            max_packet_bytes=max_packet_bytes,
+            protocol_version=protocol_version,
+        )
         self._link = link
 
     @classmethod
@@ -57,6 +58,7 @@ class ZmqAdapter(WholePacketAdapter):
         settle_seconds: float = 0.5,
         local_addresses: Iterable[int] = (),
         max_packet_bytes: int = CSP_V2_DEFAULT_MAX_PACKET_BYTES,
+        protocol_version: int = 2,
     ) -> ZmqAdapter:
         """Connect to a hub and wrap the connection."""
 
@@ -64,26 +66,23 @@ class ZmqAdapter(WholePacketAdapter):
             PyzmqMessageLink(publish_endpoint, subscribe_endpoint, settle_seconds=settle_seconds),
             local_addresses=local_addresses,
             max_packet_bytes=max_packet_bytes,
+            protocol_version=protocol_version,
         )
 
-    def _emit(self, packet: CspPacketFrame) -> CspPacketFrame:
+    def _emit(self, packet: WholePacketFrame) -> WholePacketFrame:
         try:
-            message = encode_zmq_message(
-                packet.fields, packet.payload, max_packet_bytes=self._max_packet_bytes
-            )
-        except CspV2CodecError as exc:
+            message = self._protocol.encode_zmq(packet, max_packet_bytes=self._max_packet_bytes)
+        except CodecError as exc:
             raise TransportError(f"packet cannot be sent as a ZMQ message: {exc}") from exc
         self._link.send(message)
-        return CspPacketFrame(
-            fields=packet.fields, payload=packet.payload, wire=message, link=ZMQ_LINK
-        )
+        return self._protocol.with_wire(packet, message, ZMQ_LINK)
 
-    def _poll(self, timeout: float) -> Iterable[CspPacketFrame | TransportDrop]:
-        items: list[CspPacketFrame | TransportDrop] = []
+    def _poll(self, timeout: float) -> Iterable[WholePacketFrame | TransportDrop]:
+        items: list[WholePacketFrame | TransportDrop] = []
         wait = timeout
         while (message := self._link.receive(wait)) is not None:
             wait = 0.0  # having waited for the first, take only what is already there
-            event = decode_zmq_message(message, max_packet_bytes=self._max_packet_bytes)
+            event = self._protocol.decode_zmq(message, max_packet_bytes=self._max_packet_bytes)
             if event.packet is not None:
                 if event.packet.fields.source in self._local_addresses:
                     continue  # the hub echoing our own publication back

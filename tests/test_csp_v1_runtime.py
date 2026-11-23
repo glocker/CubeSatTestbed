@@ -159,19 +159,18 @@ def test_the_protocol_version_defaults_to_csp_v2() -> None:
     assert parse_testbed_config(_setup_text(1)).protocol_version == 1
 
 
-def test_csp_v1_runs_over_can_links_only() -> None:
-    parse_testbed_config(_setup_text(1, transport='type = "socketcan"\ninterface = "vcan0"'))
-
-    with pytest.raises(ValidationError, match="carries CSP v2 only"):
-        parse_testbed_config(_setup_text(1, transport='type = "kiss"\ndevice = "/dev/null"'))
-    with pytest.raises(ValidationError, match="carries CSP v2 only"):
-        parse_testbed_config(
-            _setup_text(
-                1,
-                transport='type = "zmq"\npublish_endpoint = "tcp://127.0.0.1:6000"\n'
-                'subscribe_endpoint = "tcp://127.0.0.1:7000"',
-            )
-        )
+def test_csp_v1_is_accepted_on_every_transport() -> None:
+    for transport in (
+        'type = "in-memory"',
+        'type = "socketcan"\ninterface = "vcan0"',
+        'type = "kiss"\ndevice = "/dev/null"',
+        (
+            'type = "zmq"\npublish_endpoint = "tcp://127.0.0.1:6000"\n'
+            'subscribe_endpoint = "tcp://127.0.0.1:7000"'
+        ),
+    ):
+        setup = parse_testbed_config(_setup_text(1, transport=transport))
+        assert setup.protocol_version == 1
 
 
 def test_an_unknown_protocol_version_is_rejected() -> None:

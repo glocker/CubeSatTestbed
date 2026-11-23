@@ -1,4 +1,4 @@
-"""Serial KISS transport adapter (CSP v2 over a UART, USB-serial or pty).
+"""Serial KISS transport adapter (CSP over a UART, USB-serial or pty).
 
 A serial line joins exactly two ends, unlike a CAN bus every node listens on, so the
 adapter routes the way libcsp does (see
@@ -15,20 +15,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from cubesat_testbed.protocol.csp_v2 import CSP_V2_DEFAULT_MAX_PACKET_BYTES, CspV2CodecError
-from cubesat_testbed.protocol.csp_v2_kiss import (
-    KISS_CRC32_BYTES,
-    KissDecoder,
-    encode_kiss_frame,
-)
-from cubesat_testbed.protocol.csp_v2_packet import CspPacketFrame
+from cubesat_testbed.protocol.csp_v2 import CSP_V2_DEFAULT_MAX_PACKET_BYTES
+from cubesat_testbed.protocol.csp_v2_kiss import KISS_CRC32_BYTES
 from cubesat_testbed.transport.base import TransportDrop, TransportError
 from cubesat_testbed.transport.serial_line import SerialLine, TermiosSerialLine
 from cubesat_testbed.transport.whole_packet import WholePacketAdapter
+from cubesat_testbed.transport.whole_packet_protocol import CodecError, WholePacketFrame
 
 
 class KissAdapter(WholePacketAdapter):
-    """CSP v2 over a KISS serial line, with local delivery for simulated nodes."""
+    """CSP over a KISS serial line, with local delivery for simulated nodes."""
 
     link_name = "KISS serial"
 
@@ -38,10 +34,15 @@ class KissAdapter(WholePacketAdapter):
         *,
         local_addresses: Iterable[int] = (),
         max_packet_bytes: int = CSP_V2_DEFAULT_MAX_PACKET_BYTES,
+        protocol_version: int = 2,
     ) -> None:
-        super().__init__(local_addresses=local_addresses, max_packet_bytes=max_packet_bytes)
+        super().__init__(
+            local_addresses=local_addresses,
+            max_packet_bytes=max_packet_bytes,
+            protocol_version=protocol_version,
+        )
         self._line = line
-        self._decoder = KissDecoder(max_packet_bytes=max_packet_bytes)
+        self._decoder = self._protocol.new_kiss_decoder(max_packet_bytes=max_packet_bytes)
 
     @classmethod
     def open(
@@ -51,6 +52,7 @@ class KissAdapter(WholePacketAdapter):
         baudrate: int = 115200,
         local_addresses: Iterable[int] = (),
         max_packet_bytes: int = CSP_V2_DEFAULT_MAX_PACKET_BYTES,
+        protocol_version: int = 2,
     ) -> KissAdapter:
         """Open ``device`` and wrap it."""
 
@@ -58,6 +60,7 @@ class KissAdapter(WholePacketAdapter):
             TermiosSerialLine.open(device, baudrate=baudrate),
             local_addresses=local_addresses,
             max_packet_bytes=max_packet_bytes,
+            protocol_version=protocol_version,
         )
 
     def payload_limit(self, max_packet_bytes: int) -> int:
@@ -65,34 +68,23 @@ class KissAdapter(WholePacketAdapter):
 
         return max(0, max_packet_bytes - KISS_CRC32_BYTES)
 
-    def _emit(self, packet: CspPacketFrame) -> CspPacketFrame:
+    def _emit(self, packet: WholePacketFrame) -> WholePacketFrame:
         try:
-            wire = encode_kiss_frame(
-                packet.fields, packet.payload, max_packet_bytes=self._max_packet_bytes
-            )
-        except CspV2CodecError as exc:
+            wire = self._protocol.encode_kiss(packet, max_packet_bytes=self._max_packet_bytes)
+        except CodecError as exc:
             raise TransportError(f"packet cannot be sent as a KISS frame: {exc}") from exc
         self._line.write(wire)
-        return CspPacketFrame(
-            fields=packet.fields, payload=packet.payload, wire=wire, link="serial"
-        )
+        return self._protocol.with_wire(packet, wire, "serial")
 
-    def _poll(self, timeout: float) -> Iterable[CspPacketFrame | TransportDrop]:
+    def _poll(self, timeout: float) -> Iterable[WholePacketFrame | TransportDrop]:
         data = self._line.read(timeout)
         if not data:
             return ()
-        items: list[CspPacketFrame | TransportDrop] = []
+        items: list[WholePacketFrame | TransportDrop] = []
         for event in self._decoder.feed(data):
             if event.packet is not None:
                 packet = event.packet
-                items.append(
-                    CspPacketFrame(
-                        fields=packet.fields,
-                        payload=packet.payload,
-                        wire=packet.wire,
-                        link="serial",
-                    )
-                )
+                items.append(self._protocol.with_wire(packet, packet.wire, "serial"))
                 continue
             assert event.reason is not None
             items.append(

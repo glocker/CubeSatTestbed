@@ -61,6 +61,7 @@ line-length = 100
 testpaths = ["tests"]
 markers = [
     "socketcan: requires an explicitly configured Linux SocketCAN interface",
+    "libcsp: needs the repository-built libcsp helpers (csp_client, csp_rx), see tests/README.md",
 ]
 
 [tool.mypy]

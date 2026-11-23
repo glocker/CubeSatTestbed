@@ -75,6 +75,10 @@ echo "Regenerated $(ls "${VECTOR_DIR}"/*.txt | wc -l) golden vector captures in 
 # pinned libcsp serves both protocol versions, selected by csp_client -v.
 python3 "${VECTOR_DIR}/scripts/regenerate-v1-can-vectors.py"
 
+# The CSP v1 vectors for the whole-packet links (KISS, ZeroMQ) live in csp_v1/kiss/ and
+# csp_v1/zmq/ and need no vcan0 either.
+python3 "${VECTOR_DIR}/scripts/regenerate-v1-whole-packet-vectors.py"
+
 # The serial (KISS) vectors live in kiss/ and need no vcan0.
 "${VECTOR_DIR}/scripts/regenerate-kiss-vectors.sh"
 

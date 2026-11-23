@@ -10,7 +10,6 @@ from cubesat_testbed.transport.base import (
     TransportEndpointError,
     TransportEnvelope,
     TransportError,
-    WholePacketSender,
 )
 from cubesat_testbed.transport.factory import build_transport_adapter
 from cubesat_testbed.transport.faults import (
@@ -29,6 +28,7 @@ from cubesat_testbed.transport.tracing import (
     format_trace_line,
 )
 from cubesat_testbed.transport.whole_packet import WholePacketAdapter
+from cubesat_testbed.transport.whole_packet_protocol import WholePacketSender
 from cubesat_testbed.transport.zmq import ZmqAdapter
 from cubesat_testbed.transport.zmq_link import MessageLink, PyzmqMessageLink
 

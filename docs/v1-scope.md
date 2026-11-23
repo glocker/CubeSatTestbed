@@ -6,7 +6,7 @@ and [`docs/roadmap.md`](roadmap.md) for what's implemented versus planned.
 
 ## Protocol support
 
-v1 implements **CSP v2**, and **CSP v1 over CAN** (see [CSP v1](#csp-v1-over-can)), targeting:
+v1 implements **CSP v2** and **CSP v1** (see [CSP v1](#csp-v1)), targeting:
 
 - libcsp-compatible CSP v2 packet pack/unpack;
 - classic CAN 2.0 frames with 8-byte data fields;
@@ -28,7 +28,6 @@ and [ZeroMQ transport](#zeromq-transport).
 
 Planned later, not implemented in v1:
 
-- CSP v1 over a serial KISS line and a ZeroMQ hub;
 - raw CAN/DBC adapter;
 - custom mission codec plugin.
 
@@ -338,7 +337,7 @@ the same result on every run.
 Still out of scope: other physical layers, RDP, and a packet carrying several
 telemetry signals (each signal is still its own packet).
 
-## CSP v1 over CAN
+## CSP v1
 
 A setup selects exactly one CSP version for the whole run:
 
@@ -346,18 +345,18 @@ A setup selects exactly one CSP version for the whole run:
 protocol_version = 1   # at the top of setup.toml; the default is 2
 
 [transport]
-type = "in-memory"     # or "socketcan"
+type = "in-memory"     # or "socketcan", "kiss", "zmq"
 ```
 
-With `protocol_version = 1` every node, command, telemetry signal and frame is CSP v1,
-framed for CAN by CFP 1.x. The two versions are different code paths that share no
-codec code (`protocol/csp_v1.py` and `protocol/csp_v2.py`) and are not meant to share a
-network, so a v1 packet is never decoded as v2 or the other way round, and a SocketCAN
-adapter refuses a frame of the other version. A v1 setup runs over the CAN links only
-(`in-memory`, `socketcan`); `kiss` and `zmq` are rejected when the setup loads.
+With `protocol_version = 1` every node, command, telemetry signal and frame is CSP v1, on
+every transport: framed for CAN by CFP 1.x over `in-memory` and `socketcan`, and as one unit
+per packet over `kiss` and `zmq` (see [below](#csp-v1-over-kiss-and-zeromq)). The two versions
+are different code paths that share no codec code (`protocol/csp_v1*.py` and
+`protocol/csp_v2*.py`) and are not meant to share a network, so a v1 packet is never decoded as
+v2 or the other way round, and an adapter refuses a frame of the other version.
 
 What differs from CSP v2, as libcsp `v2.1` run as CSP v1 shows in the committed vectors
-(`tests/golden_vectors/csp_v1/can/`, see the [vector README](../tests/golden_vectors/README.md)):
+(`tests/golden_vectors/csp_v1/`, see the [vector README](../tests/golden_vectors/README.md)):
 
 - addresses are 5 bits (0-31) and **31 is the broadcast address**, so a node can be at most
   30; setup validation says so. Ports (0-63), priorities and the CRC32/HMAC flags are as in v2;
@@ -378,6 +377,31 @@ length field announces it, and is reported once; its remaining frames are not re
 strays. `--trace` shows v1 frames with `cfp=begin|more|end rem=N id=I` in place of v2's
 `pc=`/`fc=`, and the HTML report and `--json` carry them the same way. [Bus faults](#bus-faults)
 work on v1 frames too: a rule on a port reaches every frame of a packet.
+
+### CSP v1 over KISS and ZeroMQ
+
+The whole-packet links carry a v1 packet as one unit and have no CFP1 framing:
+
+- **KISS** is the v2 serial framing with the 4-byte header:
+  `C0 00 <escaped: header(4) payload crc32c(4)> C0`. The CRC-32C is appended to every frame
+  whether or not `CSP_FLAG_CRC32` is set (that flag then gives two checksums), so the payload limit
+  is `max_packet_bytes - 4`, as for v2. The receive buffer drops a frame once header plus data
+  reach `max_packet_bytes + 4` bytes (v2: `+ 6`), one byte short of the buffer, as libcsp does;
+- **ZeroMQ** is `<destination address (1)> <header(4)> <payload>`: the first byte is the
+  destination, which libcsp uses as the topic and strips on receipt without comparing it with the
+  header. No framing and no checksum of the link's own, and the testbed ignores the hub's echo of
+  its own publications as for v2;
+- the v1 header is big-endian on both links.
+
+Everything else on these links is as for CSP v2: packets for simulated nodes stay inside the
+testbed, the rest go out on the line or to the hub, what the link rejects (a CRC32 mismatch, a
+too-short frame, an oversized one) is reported as dropped packets, and `--trace` shows one line per
+packet with `link=serial` or `link=zmq`. A real libcsp process run as CSP v1 exchanged packets
+with the testbed in both directions over a pty and through libcsp's own `zmqproxy`; the
+`libcsp`-marked tests repeat this on every link in both versions (see `tests/README.md`). Bus faults
+stay in-memory only.
+
+The packaged `csp-v1` example (`run --example csp-v1`) is the default satellite as CSP v1.
 
 Not modelled: libcsp's loopback for a packet a node sends to its own address (a frame
 reaches the bus whatever its destination) and its rewrite of the broadcast address to the

@@ -9,14 +9,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- CSP v1 over CAN, selected from the setup with `protocol_version = 1` (default 2) and carried
-  by the `in-memory` and `socketcan` transports. The whole run is then CSP v1: the runner, the
+- A packaged `csp-v1` example (`cubesat-testbed run --example csp-v1`): the default satellite as
+  CSP v1, with its `--trace` showing the CFP1 frames and the telemetry addressed to the OBC.
+- `csp_rx`, a repository-built libcsp node that only listens (CAN, KISS or ZeroMQ, CSP v1 or v2),
+  and `tests/test_libcsp_interop.py`: twelve cases (three links, two protocol versions, both
+  directions) in which a real libcsp node exchanges packets with the CLI. They run in the vector
+  container behind the `libcsp` pytest marker; see `tests/README.md`.
+- CSP v1, selected from the setup with `protocol_version = 1` (default 2) and carried by every
+  transport: CFP1 frames over `in-memory` and `socketcan`, and one frame or message per packet
+  over `kiss` and `zmq`, with a separate codec for each (`protocol/csp_v1_kiss.py`,
+  `protocol/csp_v1_zmq.py`; the KISS CRC-32C is still always appended, the ZeroMQ message starts
+  with the destination address). The whole run is then CSP v1: the runner, the
   OBC Peer, `--trace` (`cfp=begin|more|end rem=N id=I`), dropped packets, the HTML report and
-  bus faults all work on CFP1 frames. Setup validation refuses what v1 cannot carry: the
-  `kiss` and `zmq` transports, addresses above 30 and the broadcast address 31. A packet
+  bus faults (in-memory) all work on v1 frames. Setup validation refuses what v1 cannot carry:
+  addresses above 30 and the broadcast address 31. A packet
   longer than the receiving node's `max_packet_bytes` is reported once, at its first frame. A
   SocketCAN adapter refuses a frame of the other protocol version. See
-  [`docs/v1-scope.md`](docs/v1-scope.md#csp-v1-over-can).
+  [`docs/v1-scope.md`](docs/v1-scope.md#csp-v1).
 - `cubesat_testbed.protocol.csp_v1`: a libcsp-compatible CSP v1 codec for CAN. The 4-byte
   big-endian header (5-bit addresses, 6-bit ports, 8 flag bits), CFP1 fragmentation
   (`fragment_packet`, `CspV1Fragmenter`, whose 10-bit packet identification counts per node and
@@ -94,9 +103,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed (internal)
 
-- CSP v1 over CAN golden vectors: twenty captures under `tests/golden_vectors/csp_v1/can/`,
-  taken on `vcan0` from the pinned libcsp `v2.1` (which speaks both protocol versions at run
-  time) through the new `csp_client -v 1`. They are regenerated and diffed in CI and verified
+- CSP v1 golden vectors: twenty captures over CAN under `tests/golden_vectors/csp_v1/can/`,
+  thirteen over KISS and eleven over ZeroMQ, taken from the pinned libcsp `v2.1` (which speaks
+  both protocol versions at run time) through the new `csp_client -v 1`. They are regenerated and diffed in CI and verified
   against the CFP1 layout by `tests/test_golden_vectors_csp_v1.py`.
 - The `--trace` line is now rendered from a structured `FrameRecord`
   (`transport.tracing.describe_frame` / `format_frame_record`) instead of being built as

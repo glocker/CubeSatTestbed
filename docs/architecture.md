@@ -16,12 +16,16 @@ src/cubesat_testbed/
   dut/manager.py          # Node mode -> DUT participant resolution
   protocol/csp_v2.py      # libcsp-compatible CSP v2 codec
   protocol/csp_v1.py      # libcsp-compatible CSP v1 codec over CAN (CFP1), independent of csp_v2
+  protocol/csp_v1_packet.py # whole-packet frame shared by the v1 KISS and ZeroMQ codecs
+  protocol/csp_v1_kiss.py # CSP v1 KISS framing, CRC-32C and receive state machine
+  protocol/csp_v1_zmq.py  # CSP v1 ZeroMQ message layout (destination byte, header, payload)
   protocol/signal_codec.py    # Byte-aligned scalar signal codec
   protocol/telemetry_codec.py # Bridges TelemetryMapping config to signal_codec
   transport/base.py       # Bus adapter interface
   transport/factory.py    # Config-to-adapter construction
   transport/in_memory.py  # CI/local in-memory bus
   transport/can_protocol.py # which CSP version a CAN link speaks: sender, reassembler, frame type
+  transport/whole_packet_protocol.py # the same for KISS and ZeroMQ: codecs, sender, frame type
   transport/faults.py     # bus fault decorator: drop/delay/corrupt/duplicate/reorder frames
   transport/socketcan.py  # Linux SocketCAN adapter
   transport/kiss.py       # serial KISS adapter (whole CSP packets, local delivery)
@@ -62,9 +66,10 @@ src/cubesat_testbed/
      transport the setup configures.
 
 3. **Protocol and transport adapters**
-   - Protocol: CSP v2, and CSP v1 over CAN, selected per setup by `protocol_version`;
-     `transport/can_protocol.py` is the one place that knows both and hands the runtime what
-     differs (sender, reassembler, how a frame names its receiver).
+   - Protocol: CSP v2 and CSP v1, selected per setup by `protocol_version`;
+     `transport/can_protocol.py` (CAN) and `transport/whole_packet_protocol.py` (KISS, ZeroMQ) are
+     the one place that knows both and hand the runtime what differs (sender, reassembler or
+     codec, frame type).
    - Transport: v1 ships `InMemoryBusAdapter`, `SocketCanAdapter`, `KissAdapter`
      and `ZmqAdapter`, built from setup config by
      `transport.factory.build_transport_adapter`. What crosses the boundary is a
