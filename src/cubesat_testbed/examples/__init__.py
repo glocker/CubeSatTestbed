@@ -103,6 +103,10 @@ EXAMPLES: tuple[Example, ...] = (
         run_flags=("--realtime",),
     ),
     Example(
+        name="csp-v1",
+        summary="the same satellite as CSP v1: CFP1 framing, 5-bit addresses, telemetry sent to the OBC",
+    ),
+    Example(
         name="module-params",
         summary="retuning a built-in module through [nodes.<node>.params]",
     ),

@@ -44,3 +44,31 @@ CUBESAT_TESTBED_SOCKETCAN_INTERFACE=vcan0 uv run pytest -m socketcan
 
 Use `vcan0` for local loopback or a physical CAN interface such as `can0` after
 it has been configured by the host.
+
+### Interop with a real libcsp node
+
+Tests marked `libcsp` (`test_libcsp_interop.py`) run a real libcsp node against the CLI instead of
+replaying recorded bytes, on every link (CAN, KISS over a pty pair, ZeroMQ through libcsp's own
+`zmqproxy`) and as CSP v1 and v2, in both directions: a libcsp node sends housekeeping that a
+scenario assertion reads, and a libcsp node listening on a port receives the telemetry a simulated
+EPS addresses to the OBC. They need the helpers the vector container builds (`csp_client`,
+`csp_rx`, `zmqproxy` in `tests/golden_vectors/bin`) and a virtual CAN bus, which the container
+creates in its own network namespace, so they run inside it, with the project's virtual
+environment from the checkout (the container has the same Python as `.python-version`):
+
+```sh
+uv sync --extra dev
+docker compose up -d --no-build        # or `docker compose up -d --build` where there is a network
+docker compose exec -T libcsp-vectors sh -c '
+  cd /app &&
+  export PYTHONPATH=/app/.venv/lib/python3.11/site-packages:/app/src \
+         CUBESAT_TESTBED_SOCKETCAN_INTERFACE=vcan0 \
+         CUBESAT_TESTBED_LIBCSP_BIN=/app/tests/golden_vectors/bin &&
+  python3 -m pytest -p no:cacheprovider -m libcsp'
+```
+
+Without `CUBESAT_TESTBED_LIBCSP_BIN` they are skipped, as the CAN cases are without
+`CUBESAT_TESTBED_SOCKETCAN_INTERFACE`. Twelve cases take about eighty seconds, because the testbed
+runs paced against real time. A container started from an image older than a helper does not have
+that helper; compile it with the `cc` line of the `Dockerfile` (the entrypoint also overwrites
+`bin/csp_client` with the image's copy on every start).

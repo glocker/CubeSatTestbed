@@ -88,6 +88,7 @@ them, and refuses to overwrite existing files unless you pass `--force`.
 ```text
 default        in-memory three-node satellite; OBC sheds the payload on a low battery
 socketcan-hil  the same run against a real bus: payload as hardware on SocketCAN vcan0
+csp-v1         the same satellite as CSP v1: CFP1 framing, 5-bit addresses, telemetry sent to the OBC
 module-params  retuning a built-in module through [nodes.<node>.params]
 ```
 

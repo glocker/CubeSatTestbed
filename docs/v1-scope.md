@@ -397,8 +397,11 @@ Everything else on these links is as for CSP v2: packets for simulated nodes sta
 testbed, the rest go out on the line or to the hub, what the link rejects (a CRC32 mismatch, a
 too-short frame, an oversized one) is reported as dropped packets, and `--trace` shows one line per
 packet with `link=serial` or `link=zmq`. A real libcsp process run as CSP v1 exchanged packets
-with the testbed in both directions over a pty and through libcsp's own `zmqproxy`. Bus faults
+with the testbed in both directions over a pty and through libcsp's own `zmqproxy`; the
+`libcsp`-marked tests repeat this on every link in both versions (see `tests/README.md`). Bus faults
 stay in-memory only.
+
+The packaged `csp-v1` example (`run --example csp-v1`) is the default satellite as CSP v1.
 
 Not modelled: libcsp's loopback for a packet a node sends to its own address (a frame
 reaches the bus whatever its destination) and its rewrite of the broadcast address to the

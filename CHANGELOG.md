@@ -9,6 +9,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- A packaged `csp-v1` example (`cubesat-testbed run --example csp-v1`): the default satellite as
+  CSP v1, with its `--trace` showing the CFP1 frames and the telemetry addressed to the OBC.
+- `csp_rx`, a repository-built libcsp node that only listens (CAN, KISS or ZeroMQ, CSP v1 or v2),
+  and `tests/test_libcsp_interop.py`: twelve cases (three links, two protocol versions, both
+  directions) in which a real libcsp node exchanges packets with the CLI. They run in the vector
+  container behind the `libcsp` pytest marker; see `tests/README.md`.
 - CSP v1, selected from the setup with `protocol_version = 1` (default 2) and carried by every
   transport: CFP1 frames over `in-memory` and `socketcan`, and one frame or message per packet
   over `kiss` and `zmq`, with a separate codec for each (`protocol/csp_v1_kiss.py`,

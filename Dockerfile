@@ -40,6 +40,7 @@ RUN git clone --branch "${LIBCSP_TAG}" --depth 1 "${LIBCSP_REPO}" /opt/libcsp \
 
 COPY tests/golden_vectors/src/csp_client.c /app/tests/golden_vectors/src/csp_client.c
 COPY tests/golden_vectors/src/zmq_capture.c /app/tests/golden_vectors/src/zmq_capture.c
+COPY tests/golden_vectors/src/csp_rx.c /app/tests/golden_vectors/src/csp_rx.c
 
 # Keep the helpers under /opt as the runtime source of truth. The Compose bind
 # mount hides image-time /app contents, so the entrypoint copies these binaries into
@@ -49,6 +50,8 @@ COPY tests/golden_vectors/src/zmq_capture.c /app/tests/golden_vectors/src/zmq_ca
 # installed (libzmq3-dev above), so csp_client can speak the zmqhub topology.
 # zmqproxy is libcsp's own hub example, built from the same pinned source;
 # zmq_capture is the repository-owned subscriber that records what crosses the hub.
+# csp_rx is the repository-owned listener (the receiving counterpart of csp_client) the libcsp
+# interop tests use to check that a real libcsp node accepts what the testbed sends.
 RUN mkdir -p /opt/cubesat_testbed/bin /app/tests/golden_vectors/bin \
     && cc \
         -std=gnu11 \
@@ -76,6 +79,25 @@ RUN mkdir -p /opt/cubesat_testbed/bin /app/tests/golden_vectors/bin \
         /app/tests/golden_vectors/src/zmq_capture.c \
         -lzmq \
         -o /opt/cubesat_testbed/bin/zmq_capture \
+    && cc \
+        -std=gnu11 \
+        -Wall \
+        -Wextra \
+        -Wpedantic \
+        -Werror \
+        -I/opt/libcsp/include \
+        -I/opt/libcsp/src \
+        -I/opt/libcsp/build/include \
+        -I/opt/libcsp/examples \
+        /app/tests/golden_vectors/src/csp_rx.c \
+        /opt/libcsp/examples/csp_posix_helper.c \
+        /opt/libcsp/build/libcsp.a \
+        -lsocketcan \
+        -lzmq \
+        -lpthread \
+        -lrt \
+        -lutil \
+        -o /opt/cubesat_testbed/bin/csp_rx \
     && cc \
         -std=gnu11 \
         -I/opt/libcsp/include \

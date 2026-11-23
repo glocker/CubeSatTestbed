@@ -12,7 +12,9 @@ APP_GID="$(stat -c '%g' /app 2>/dev/null || echo 0)"
 
 mkdir -p "$(dirname "${HELPER_TARGET}")"
 install -m 0755 -o "${APP_UID}" -g "${APP_GID}" "${HELPER_SOURCE}" "${HELPER_TARGET}"
-for helper in zmq_capture zmqproxy; do
+for helper in zmq_capture zmqproxy csp_rx; do
+    # An image built before a helper existed does not have it; skip rather than fail startup.
+    [ -f "/opt/cubesat_testbed/bin/${helper}" ] || continue
     install -m 0755 -o "${APP_UID}" -g "${APP_GID}" \
         "/opt/cubesat_testbed/bin/${helper}" "/app/tests/golden_vectors/bin/${helper}"
 done

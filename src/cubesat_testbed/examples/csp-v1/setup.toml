@@ -1,0 +1,68 @@
+# The `default` satellite as CSP v1: the protocol of most flown CubeSats and of older GomSpace
+# stacks. One line selects it; every node, command and frame in the run is then CSP v1.
+#
+# What that changes on the wire (run with --trace to see it): a CSP v1 header is 4 bytes with
+# 5-bit addresses, and on CAN every packet is framed by CFP 1.x -- the first frame carries the
+# header, a length and at most two payload bytes, so even the EPS's 4-byte float takes two frames
+# (`cfp=begin rem=1` then `cfp=end rem=0`). The highest usable node address is 30; 31 is the
+# broadcast address and setup validation says so.
+protocol_version = 1
+
+[transport]
+type = "in-memory"
+
+[nodes.obc]
+mode = "simulated"
+module_type = "obc_peer"
+address = 1
+
+[nodes.eps]
+mode = "simulated"
+module_type = "generic_eps"
+address = 2
+
+[nodes.payload]
+mode = "simulated"
+module_type = "simple_payload"
+address = 3
+
+[nodes.obc.commands.payload_power_off]
+target = "payload"
+destination_port = 10
+source_port = 10
+payload_hex = "00"
+
+# `to` addresses the frame to the OBC. On a real bus a node only receives frames carrying its own
+# CSP address, so telemetry meant for a real OBC has to say so; here it also shows in the trace.
+[nodes.eps.telemetry.battery_percent]
+source_port = 20
+destination_port = 20
+to = "obc"
+units = "percent"
+min = 0
+max = 100
+offset = 0
+length = 4
+type = "float"
+
+[nodes.payload.telemetry.power_status]
+source_port = 21
+destination_port = 21
+to = "obc"
+offset = 0
+length = 1
+type = "uint"
+
+[nodes.payload.telemetry.power_status.enum]
+0 = "offline"
+1 = "online"
+
+[nodes.obc.rules.low_battery_shed_payload]
+signal = "eps.telemetry.battery_percent"
+op = "<"
+threshold = 30.0
+for = "3s"
+
+[[nodes.obc.rules.low_battery_shed_payload.actions]]
+type = "send_command"
+command = "payload_power_off"
