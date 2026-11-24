@@ -575,6 +575,10 @@ type = "float"
   itself are both read. With `to` only a frame addressed to that node counts.
 - `to` must name a configured node. It does not change the scenario's assertions, only the
   frames.
+- Each signal is its own packet, so two of a node's signals on the same source and destination
+  ports cannot be told apart and the setup is refused when it loads, naming both. A mapping
+  without `to` overlaps every other on the same ports; mappings naming different nodes with `to`
+  do not.
 
 Mind the ports on a real libcsp node: it can only `csp_bind` ports up to
 `CSP_PORT_MAX_BIND` (16 in the default build), so a real OBC cannot listen for telemetry on

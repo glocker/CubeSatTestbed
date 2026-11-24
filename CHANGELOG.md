@@ -114,6 +114,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Two telemetry signals of one node on the same source and destination ports (the shape of a real
+  housekeeping packet, which each signal being its own packet cannot describe) passed validation
+  and then aborted the run at the first telemetry frame with "matches multiple configured
+  routes". The setup is now refused when it loads, naming both mappings and the ports. A mapping
+  without `to` overlaps every other mapping on the same ports, since it matches whatever the
+  destination is; mappings that name different nodes with `to` stay distinct. Commands get the
+  same check where it can be decided from the setup: two commands from one node that send the
+  same bytes (same target, ports and `payload_hex`) are refused, while commands that share ports
+  and differ in payload (power on, power off) remain fine.
 - Telemetry was addressed to its own sender, so on a real bus it could not travel in either
   direction. A real EPS that sends its housekeeping to the OBC (`src=2 dst=1`) matched no
   telemetry route, was dropped as an unknown frame and left the assertion "never observed on

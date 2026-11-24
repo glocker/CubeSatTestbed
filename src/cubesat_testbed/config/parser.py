@@ -695,6 +695,38 @@ class TestbedConfig(BaseModel):
                     f"address; the highest usable node address is {CSP_V1_BROADCAST_ADDRESS - 1}"
                 )
 
+    @staticmethod
+    def _validate_telemetry_routes_are_distinct(node_name: str, node: NodeConfig) -> None:
+        """Reject two of a node's signals that a receiver could not tell apart.
+
+        A packet is matched to a signal by the sender, the two ports and, if the mapping
+        names one with ``to``, the destination. Each signal is encoded into its own packet,
+        so two signals that match the same packets would be one packet read two ways: the run
+        used to abort at the first telemetry frame with "matches multiple configured routes".
+        A mapping without ``to`` matches whatever the destination is, so it overlaps every
+        other mapping on the same ports.
+        """
+
+        seen: dict[tuple[int, int], list[tuple[str, str | None]]] = {}
+        for telemetry_name, mapping in node.telemetry.items():
+            ports = (mapping.source_port, mapping.destination_port)
+            for other_name, other_to in seen.get(ports, []):
+                if mapping.to is None or other_to is None or mapping.to == other_to:
+                    raise ValueError(
+                        f"telemetry mappings {node_name}.{other_name} and "
+                        f"{node_name}.{telemetry_name} cannot be told apart: both are sent by "
+                        f"node {node_name!r} on source_port={mapping.source_port} "
+                        f"destination_port={mapping.destination_port}"
+                        + (
+                            ""
+                            if mapping.to is None and other_to is None
+                            else " to overlapping destinations"
+                        )
+                        + "; each signal is its own packet, so give one of them a different "
+                        "port (or a different `to`)"
+                    )
+            seen.setdefault(ports, []).append((telemetry_name, mapping.to))
+
     def _validate_bus_faults_transport(self) -> None:
         if self.bus_faults is not None and not isinstance(self.transport, InMemoryTransportConfig):
             raise ValueError(
@@ -704,6 +736,7 @@ class TestbedConfig(BaseModel):
             )
 
     def _validate_command_mappings(self) -> None:
+        commands_by_wire: dict[tuple[str, str, int, int, bytes], str] = {}
         for node_name, node in self.nodes.items():
             for command_name, command in node.commands.items():
                 _validate_identifier("command name", command_name)
@@ -711,6 +744,25 @@ class TestbedConfig(BaseModel):
                     raise ValueError(
                         f"command {node_name}.{command_name} targets unknown node "
                         f"{command.target!r}"
+                    )
+                # Two commands that put the same bytes on the wire are one command to a
+                # receiver, which could never tell which was sent. Commands that share ports
+                # and differ in payload (power on, power off) are the normal case and fine.
+                wire = (
+                    node_name,
+                    command.target,
+                    command.destination_port,
+                    command.source_port,
+                    command.payload_hex,
+                )
+                twin = commands_by_wire.setdefault(wire, f"{node_name}.{command_name}")
+                if twin != f"{node_name}.{command_name}":
+                    raise ValueError(
+                        f"commands {twin} and {node_name}.{command_name} send the same bytes "
+                        f"from node {node_name!r} to {command.target!r} on destination_port="
+                        f"{command.destination_port} source_port={command.source_port}, so a "
+                        "receiver cannot tell them apart; give one a different payload_hex "
+                        "or port"
                     )
                 # Only the sender's limit is a config error: its libcsp could not
                 # even build the packet. A target with a smaller buffer is a real
@@ -742,6 +794,7 @@ class TestbedConfig(BaseModel):
     def _validate_telemetry_mappings(self) -> None:
         owners_by_signal: dict[str, str] = {}
         for node_name, node in self.nodes.items():
+            self._validate_telemetry_routes_are_distinct(node_name, node)
             for telemetry_name, mapping in node.telemetry.items():
                 _validate_identifier("telemetry mapping name", telemetry_name)
                 signal = mapping.resolved_signal(node_name, telemetry_name)
