@@ -67,6 +67,7 @@ BytesLike: TypeAlias = bytes | bytearray | memoryview
 FaultActionResult: TypeAlias = ActiveOverride | NamedFaultFlag | None
 
 _PATH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$")
+_SIGNAL_INDEX_RE = re.compile(r"^(?P<base>.+)\[[0-9]+\]$")
 
 
 class ThresholdOperator(str, Enum):
@@ -90,7 +91,7 @@ class ObcPeerThresholdCondition:
         object.__setattr__(
             self,
             "signal",
-            _validate_path("telemetry signal", self.signal, min_segments=3),
+            _validate_signal("telemetry signal", self.signal),
         )
         object.__setattr__(self, "operator", _coerce_threshold_operator(self.operator))
         object.__setattr__(
@@ -438,7 +439,7 @@ class ObcPeerModule(SimulatedModule):
         signals reset their ``for`` timer when the threshold condition is false.
         """
 
-        validated_signal = _validate_path("telemetry signal", signal, min_segments=3)
+        validated_signal = _validate_signal("telemetry signal", signal)
         current_time = self._resolve_time(now)
         results: list[ObcPeerRuleResult] = []
 
@@ -726,6 +727,17 @@ def _validate_path(kind: str, value: str, *, min_segments: int) -> str:
     if len(value.split(".")) < min_segments:
         raise ModuleError(f"{kind} must contain at least {min_segments} path segments")
     return value
+
+
+def _validate_signal(kind: str, value: str) -> str:
+    """A telemetry signal path, or ``path[i]`` for one element of an array field."""
+
+    if isinstance(value, str):
+        indexed = _SIGNAL_INDEX_RE.fullmatch(value)
+        if indexed is not None:
+            _validate_path(kind, indexed.group("base"), min_segments=3)
+            return value
+    return _validate_path(kind, value, min_segments=3)
 
 
 def _coerce_bytes(name: str, value: BytesLike) -> bytes:

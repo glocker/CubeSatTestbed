@@ -23,7 +23,12 @@ Coverage:
   over a real pty and the ZeroMQ adapter through an in-process hub
   (`tests/zmq_hub.py`), including scenarios run end to end over each;
 - signal codec tests for byte offsets, endian handling, scalar numeric types,
-  scale and offset;
+  scale and offset, bit fields and fixed-length arrays, and telemetry packets
+  carrying several signals (`test_telemetry_packets.py`);
+- layout vectors (`layout_vectors/`, `test_layout_vectors.py`): the codec against
+  bytes it did not produce — a QUBE beacon decoded by the Kaitai Struct parser of
+  `satnogs-decoders`, and the CSP headers libcsp wrote into the golden vectors,
+  read as bit fields;
 - `InMemoryBusAdapter` integration tests for scenario execution in CI;
 - per-module model tests for Generic EPS, OBC Peer, Simple Payload and the RC
   thermal node;

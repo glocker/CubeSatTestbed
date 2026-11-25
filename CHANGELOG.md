@@ -9,6 +9,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Telemetry packets carrying several signals. `[nodes.<node>.packets.<name>]` declares the
+  addressing once (ports, `to`, priority, flags) and each `.fields.<field>` one signal's place in
+  the payload, so a housekeeping struct is sent as one CSP packet and decoded field by field, the
+  way a real board sends it. The single-signal `[nodes.<node>.telemetry.<name>]` form is the
+  shorthand for a one-field packet; existing setups run unchanged. The trace names every field
+  of a packet on one line. See [`docs/v1-scope.md`](docs/v1-scope.md#telemetry-wire-encoding).
+- Bit fields and fixed-length arrays in the signal codec. A bit field gives `bit_offset` (0-7,
+  from the byte's most significant bit) and `bit_length` (1-64) instead of `length` and is read
+  most significant bit first, across byte boundaries, as Kaitai Struct and CCSDS do; signed bit
+  fields are two's complement. `count = N` makes any field an array of N back-to-back elements;
+  its value is a tuple, and `<signal>[i]` names one element in assertions and OBC rules (each
+  element is also plotted in the HTML report). A `bool` packs as 1/0 into an integer field.
+- A packaged `eps-housekeeping` example: seven EPS signals in one 25-byte packet, including an
+  array of cell voltages and two bit fields, with an OBC rule on one element of the array.
+  `generic_eps` reports the new `cell_voltages_v` (two series cells; the `battery_cell_dead`
+  fault drops the last one).
+- Layout vectors (`tests/layout_vectors/`): the codec is checked against bytes it did not
+  produce, a QUBE beacon decoded by the Kaitai Struct parser of `satnogs-decoders` and the CSP
+  v1/v2 headers libcsp wrote into the golden vectors, read as cross-byte bit fields.
 - A packaged `csp-v1` example (`cubesat-testbed run --example csp-v1`): the default satellite as
   CSP v1, with its `--trace` showing the CFP1 frames and the telemetry addressed to the OBC.
 - `csp_rx`, a repository-built libcsp node that only listens (CAN, KISS or ZeroMQ, CSP v1 or v2),
@@ -154,6 +173,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Fields of one telemetry packet that overlap, a packet longer than its node's
+  `max_packet_bytes`, an index past the end of an array (or on a scalar signal) in a scenario,
+  and an OBC rule naming a whole array are refused when the setup or scenario loads; a rule
+  from a rules file is checked when the run is built. A module that reports no value for a
+  configured field now fails with a message naming the field and the packet instead of a bare
+  `KeyError`.
 - A telemetry payload the signal's codec cannot read (an enum value with no label, say a
   byte a bus fault corrupted) is now a reported dropped packet (`reason=undecodable`,
   in `--trace`, the text output, `--json` and the HTML report) and the run goes on, instead

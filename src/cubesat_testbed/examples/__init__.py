@@ -107,6 +107,10 @@ EXAMPLES: tuple[Example, ...] = (
         summary="the same satellite as CSP v1: CFP1 framing, 5-bit addresses, telemetry sent to the OBC",
     ),
     Example(
+        name="eps-housekeeping",
+        summary="one EPS housekeeping packet with seven fields, an array and bit fields",
+    ),
+    Example(
         name="module-params",
         summary="retuning a built-in module through [nodes.<node>.params]",
     ),

@@ -1,0 +1,40 @@
+name: "EPS Housekeeping Packet"
+description: "Read fields of one multi-field housekeeping packet; a dead cell sheds the payload"
+
+steps:
+  - action: "wait"
+    virtual_time: "2s"
+
+  # Three fields of the same packet: a bit field with an enum, a 1-bit flag, a float.
+  - action: "assert"
+    signal: "eps.telemetry.power_mode"
+    op: "=="
+    value: "nominal"
+
+  - action: "assert"
+    signal: "eps.telemetry.payload_rail_enabled"
+    op: "=="
+    value: 1
+
+  - action: "assert"
+    signal: "eps.telemetry.cell_voltages_v[1]"
+    op: ">"
+    value: 3.5
+
+  - action: "inject_fault"
+    type: "named_fault"
+    target: "eps.battery_cell_dead"
+
+  # The dead cell drags element 1 of the array down; the OBC rule watching it fires
+  # after 2 virtual seconds and the payload reports itself offline.
+  - action: "assert"
+    signal: "eps.telemetry.cell_voltages_v[1]"
+    op: "<"
+    value: 3.0
+    timeout: "2s"
+
+  - action: "assert"
+    signal: "payload.telemetry.power_status"
+    op: "=="
+    value: "offline"
+    timeout: "5s"

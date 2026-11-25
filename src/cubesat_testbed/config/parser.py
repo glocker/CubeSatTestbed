@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import tomllib
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self, TypeAlias
@@ -44,6 +45,11 @@ _SCHEMA_MODEL_CONFIG = ConfigDict(extra="forbid", str_strip_whitespace=True, pop
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _PATH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$")
+_SIGNAL_REF_RE = re.compile(
+    r"^(?P<base>[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+)(?:\[(?P<index>[0-9]+)\])?$"
+)
+"""A telemetry signal as assertions and OBC rules name it: a path, or ``path[i]`` for
+one element of an array field."""
 _DURATION_RE = re.compile(r"^([0-9]+)\s*([A-Za-zµ]*)$")
 _CYCLE_RE = re.compile(r"^([0-9]+)\s*([A-Za-z]*)$")
 
@@ -249,42 +255,37 @@ class CommandMapping(BaseModel):
         return _coerce_hex_bytes(value)
 
 
-class TelemetryMapping(BaseModel):
-    """Telemetry signal-to-CSP metadata mapping.
+class TelemetryFieldLayout(BaseModel):
+    """Where one telemetry signal sits in a packet's payload, and how it is encoded.
+
+    Shared by a ``[nodes.<node>.telemetry.<name>]`` mapping (a packet holding one signal)
+    and each ``[nodes.<node>.packets.<packet>.fields.<name>]`` of a multi-field packet.
+
+    A byte-aligned field gives ``offset`` (byte) and ``length`` (bytes); a bit field gives
+    ``offset`` (the byte it starts in), ``bit_offset`` (0-7, counted from that byte's most
+    significant bit) and ``bit_length`` (1-64), and is read most significant bit first,
+    across byte boundaries if needed; ``endian`` does not apply to it. ``count`` above 1
+    makes the field a fixed-length array of that many elements laid out back to back; its
+    value is a tuple, and ``<signal>[i]`` names one element in assertions and OBC rules.
+    ``type``/``endian``/``scale``/``offset_value`` are the scalar encoding of each element.
+    ``enum`` optionally maps the raw integer wire value to a label string (and back) for
+    non-numeric telemetry such as ``power_status``.
 
     If ``signal`` is omitted, the signal path is derived as
-    ``<node>.telemetry.<mapping-name>`` during setup-level validation.
-
-    ``offset``/``length``/``type``/``endian``/``scale``/``offset_value`` declare
-    the byte-aligned wire layout used to encode this signal into its own
-    CSP packet (and decode it back); every telemetry mapping
-    requires one, so a configured signal can always be produced/consumed as
-    real bytes on the bus, not just read out of Python state. ``enum``
-    optionally maps the field's raw integer wire value to a label string (and
-    back) for non-numeric telemetry such as ``power_status``, since the wire
-    codec itself is scalar-only.
-
-    ``to`` names the node a *simulated* node's telemetry is addressed to (an OBC, say): a
-    real OBC only receives frames carrying its own CSP address. Without it the frame is
-    addressed to its own sender, which no other node on a real bus ever receives. For
-    telemetry a *real* node sends, ``to`` is optional too: without it the signal is matched
-    on the sender's address and the ports whatever the frame is addressed to, with it only a
-    frame addressed to that node counts.
+    ``<node>.telemetry.<field-name>`` during setup-level validation.
     """
 
     model_config = _SCHEMA_MODEL_CONFIG
 
-    source_port: CspPort
-    destination_port: CspPort
-    to: str | None = None
-    priority: CspPriority = 2
-    flags: CspFlags = 0
     signal: str | None = None
     units: str | None = None
     min: float | int | None = None
     max: float | int | None = None
     offset: int
-    length: int
+    length: int | None = None
+    bit_offset: int | None = None
+    bit_length: int | None = None
+    count: int = Field(default=1, ge=1, strict=True)
     type: Literal["uint", "int", "float"]
     endian: Literal["big", "little"] = "big"
     scale: float = 1.0
@@ -297,13 +298,6 @@ class TelemetryMapping(BaseModel):
         if value is None:
             return None
         return _validate_path("telemetry signal", value, min_segments=3)
-
-    @field_validator("to")
-    @classmethod
-    def _validate_to(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return _validate_identifier("telemetry destination node", value)
 
     @model_validator(mode="after")
     def _validate_wire_layout(self) -> Self:
@@ -319,6 +313,17 @@ class TelemetryMapping(BaseModel):
             SignalField,
         )
 
+        is_bit_field = self.bit_offset is not None or self.bit_length is not None
+        if is_bit_field and "endian" in self.model_fields_set:
+            raise ValueError(
+                "invalid telemetry wire layout: a bit field is read most significant bit "
+                "first; remove endian"
+            )
+        if not is_bit_field and self.length is None:
+            raise ValueError(
+                "invalid telemetry wire layout: give length (bytes), or bit_offset and "
+                "bit_length for a bit field"
+            )
         try:
             SignalField(
                 name="telemetry-field-check",
@@ -328,6 +333,9 @@ class TelemetryMapping(BaseModel):
                 endian=SignalEndian(self.endian),
                 scale=self.scale,
                 offset=self.offset_value,
+                bit_offset=self.bit_offset,
+                bit_length=self.bit_length,
+                count=self.count,
             )
         except SignalCodecError as exc:
             raise ValueError(f"invalid telemetry wire layout: {exc}") from exc
@@ -355,12 +363,73 @@ class TelemetryMapping(BaseModel):
                 raise ValueError(f"enum label {label!r} is mapped by more than one raw value")
             labels_seen.add(label)
 
+    @property
+    def end_byte(self) -> int:
+        """Exclusive byte offset right after this field (its last element)."""
+
+        if self.bit_length is not None:
+            end_bit = self.offset * 8 + (self.bit_offset or 0) + self.bit_length * self.count
+            return -(-end_bit // 8)
+        assert self.length is not None
+        return self.offset + self.length * self.count
+
     def resolved_signal(self, node_name: str, mapping_name: str) -> str:
         """Return the explicit or derived full telemetry path."""
 
         if self.signal is not None:
             return self.signal
         return f"{node_name}.telemetry.{mapping_name}"
+
+
+class _TelemetryAddressing(BaseModel):
+    """CSP header fields of a telemetry packet: ports, priority, flags and ``to``.
+
+    ``to`` names the node a *simulated* node's telemetry is addressed to (an OBC, say): a
+    real OBC only receives frames carrying its own CSP address. Without it the frame is
+    addressed to its own sender, which no other node on a real bus ever receives. For
+    telemetry a *real* node sends, ``to`` is optional too: without it the packet is matched
+    on the sender's address and the ports whatever the frame is addressed to, with it only a
+    frame addressed to that node counts.
+    """
+
+    model_config = _SCHEMA_MODEL_CONFIG
+
+    source_port: CspPort
+    destination_port: CspPort
+    to: str | None = None
+    priority: CspPriority = 2
+    flags: CspFlags = 0
+
+    @field_validator("to")
+    @classmethod
+    def _validate_to(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_identifier("telemetry destination node", value)
+
+
+class TelemetryMapping(TelemetryFieldLayout, _TelemetryAddressing):
+    """One telemetry signal in a packet of its own: ``[nodes.<node>.telemetry.<name>]``.
+
+    The shorthand for a :class:`TelemetryPacket` with a single field: the addressing of
+    :class:`_TelemetryAddressing` plus the wire layout of :class:`TelemetryFieldLayout`.
+    """
+
+
+class TelemetryPacketField(TelemetryFieldLayout):
+    """One field of a multi-field packet: ``[nodes.<node>.packets.<packet>.fields.<name>]``."""
+
+
+class TelemetryPacket(_TelemetryAddressing):
+    """Several telemetry signals sent together as one CSP packet.
+
+    ``[nodes.<node>.packets.<name>]`` holds the addressing, and each
+    ``[nodes.<node>.packets.<name>.fields.<field>]`` one signal's place in the payload: the
+    normal shape of a housekeeping packet. The sender encodes every field into one packet
+    and the receiver decodes it field by field; fields must not overlap, gaps are zero.
+    """
+
+    fields: dict[str, TelemetryPacketField] = Field(min_length=1)
 
 
 class ObcRuleCommandAction(BaseModel):
@@ -428,7 +497,26 @@ class ObcRule(BaseModel):
     @field_validator("signal")
     @classmethod
     def _validate_signal(cls, value: str) -> str:
-        return _validate_path("rule signal", value, min_segments=3)
+        return _validate_signal_reference("rule signal", value)
+
+
+@dataclass(frozen=True, slots=True)
+class TelemetryPacketDefinition:
+    """One telemetry packet of a node, whichever way the setup declared it.
+
+    ``fields`` holds ``(config name, signal path, layout)`` per signal; a single-signal
+    ``telemetry`` mapping gives one entry. ``label`` names the packet in messages:
+    ``<node>.<mapping>`` for a mapping, ``<node>.packets.<packet>`` for a packet.
+    """
+
+    node_name: str
+    label: str
+    addressing: _TelemetryAddressing
+    fields: tuple[tuple[str, str, TelemetryFieldLayout], ...]
+
+    @property
+    def payload_length(self) -> int:
+        return max(layout.end_byte for _name, _signal, layout in self.fields)
 
 
 class NodeConfig(BaseModel):
@@ -459,6 +547,7 @@ class NodeConfig(BaseModel):
 
     commands: dict[str, CommandMapping] = Field(default_factory=dict)
     telemetry: dict[str, TelemetryMapping] = Field(default_factory=dict)
+    packets: dict[str, TelemetryPacket] = Field(default_factory=dict)
     rules: dict[str, ObcRule] = Field(default_factory=dict)
     params: dict[str, object] = Field(default_factory=dict)
 
@@ -521,6 +610,36 @@ class NodeConfig(BaseModel):
             config_cls(name="params-check", **self.params)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"invalid params for module_type {self.module_type!r}: {exc}") from exc
+
+    def telemetry_packets(self, node_name: str) -> tuple[TelemetryPacketDefinition, ...]:
+        """Every telemetry packet this node sends, single-signal mappings first.
+
+        A ``telemetry`` mapping is a packet of its own holding one field; a ``packets``
+        entry holds several. Both come out in the same shape, in setup order.
+        """
+
+        definitions = [
+            TelemetryPacketDefinition(
+                node_name=node_name,
+                label=f"{node_name}.{mapping_name}",
+                addressing=mapping,
+                fields=((mapping_name, mapping.resolved_signal(node_name, mapping_name), mapping),),
+            )
+            for mapping_name, mapping in self.telemetry.items()
+        ]
+        definitions.extend(
+            TelemetryPacketDefinition(
+                node_name=node_name,
+                label=f"{node_name}.packets.{packet_name}",
+                addressing=packet,
+                fields=tuple(
+                    (field_name, field.resolved_signal(node_name, field_name), field)
+                    for field_name, field in packet.fields.items()
+                ),
+            )
+            for packet_name, packet in self.packets.items()
+        )
+        return tuple(definitions)
 
 
 BusFaultType: TypeAlias = Literal["drop", "delay", "corrupt", "duplicate", "reorder"]
@@ -644,14 +763,28 @@ class TestbedConfig(BaseModel):
             if command_name in node.commands
         )
 
+    def telemetry_packets(self) -> tuple[TelemetryPacketDefinition, ...]:
+        """Every node's telemetry packets, in setup order."""
+
+        return tuple(
+            definition
+            for node_name, node in self.nodes.items()
+            for definition in node.telemetry_packets(node_name)
+        )
+
     def telemetry_signal_names(self) -> frozenset[str]:
         """Return all explicit and derived telemetry signal paths."""
 
-        return frozenset(
-            mapping.resolved_signal(node_name, telemetry_name)
-            for node_name, node in self.nodes.items()
-            for telemetry_name, mapping in node.telemetry.items()
-        )
+        return frozenset(self.telemetry_signal_counts())
+
+    def telemetry_signal_counts(self) -> dict[str, int]:
+        """Return each telemetry signal path with its element count (1 for a scalar)."""
+
+        return {
+            signal: layout.count
+            for definition in self.telemetry_packets()
+            for _name, signal, layout in definition.fields
+        }
 
     def _validate_node_names(self) -> None:
         for node_name in self.nodes:
@@ -696,36 +829,40 @@ class TestbedConfig(BaseModel):
                 )
 
     @staticmethod
-    def _validate_telemetry_routes_are_distinct(node_name: str, node: NodeConfig) -> None:
-        """Reject two of a node's signals that a receiver could not tell apart.
+    def _validate_telemetry_routes_are_distinct(
+        node_name: str, definitions: tuple[TelemetryPacketDefinition, ...]
+    ) -> None:
+        """Reject two of a node's packets that a receiver could not tell apart.
 
-        A packet is matched to a signal by the sender, the two ports and, if the mapping
-        names one with ``to``, the destination. Each signal is encoded into its own packet,
-        so two signals that match the same packets would be one packet read two ways: the run
-        used to abort at the first telemetry frame with "matches multiple configured routes".
-        A mapping without ``to`` matches whatever the destination is, so it overlaps every
-        other mapping on the same ports.
+        A packet is matched by the sender, the two ports and, if it names one with ``to``,
+        the destination. Two packets that match the same frames would be one packet read
+        two ways: the run used to abort at the first telemetry frame with "matches multiple
+        configured routes". A packet without ``to`` matches whatever the destination is, so
+        it overlaps every other packet on the same ports. Signals that belong together go
+        in one ``[nodes.<node>.packets.<name>]``.
         """
 
         seen: dict[tuple[int, int], list[tuple[str, str | None]]] = {}
-        for telemetry_name, mapping in node.telemetry.items():
-            ports = (mapping.source_port, mapping.destination_port)
-            for other_name, other_to in seen.get(ports, []):
-                if mapping.to is None or other_to is None or mapping.to == other_to:
+        for definition in definitions:
+            addressing = definition.addressing
+            ports = (addressing.source_port, addressing.destination_port)
+            for other_label, other_to in seen.get(ports, []):
+                if addressing.to is None or other_to is None or addressing.to == other_to:
                     raise ValueError(
-                        f"telemetry mappings {node_name}.{other_name} and "
-                        f"{node_name}.{telemetry_name} cannot be told apart: both are sent by "
-                        f"node {node_name!r} on source_port={mapping.source_port} "
-                        f"destination_port={mapping.destination_port}"
+                        f"telemetry mappings {other_label} and {definition.label} cannot be "
+                        f"told apart: both are sent by node {node_name!r} on "
+                        f"source_port={addressing.source_port} "
+                        f"destination_port={addressing.destination_port}"
                         + (
                             ""
-                            if mapping.to is None and other_to is None
+                            if addressing.to is None and other_to is None
                             else " to overlapping destinations"
                         )
-                        + "; each signal is its own packet, so give one of them a different "
-                        "port (or a different `to`)"
+                        + "; each is its own packet, so put the signals in one "
+                        f"[nodes.{node_name}.packets.<name>] or give one a different port "
+                        "(or a different `to`)"
                     )
-            seen.setdefault(ports, []).append((telemetry_name, mapping.to))
+            seen.setdefault(ports, []).append((definition.label, addressing.to))
 
     def _validate_bus_faults_transport(self) -> None:
         if self.bus_faults is not None and not isinstance(self.transport, InMemoryTransportConfig):
@@ -792,39 +929,75 @@ class TestbedConfig(BaseModel):
                     )
 
     def _validate_telemetry_mappings(self) -> None:
+        # Imported lazily for the reason given in TelemetryFieldLayout._validate_wire_layout.
+        from cubesat_testbed.protocol.signal_codec import SignalCodecError, SignalLayout
+        from cubesat_testbed.protocol.telemetry_codec import (
+            TelemetryCodecError,
+            signal_field_for_mapping,
+        )
+
         owners_by_signal: dict[str, str] = {}
         for node_name, node in self.nodes.items():
-            self._validate_telemetry_routes_are_distinct(node_name, node)
-            for telemetry_name, mapping in node.telemetry.items():
+            for telemetry_name in node.telemetry:
                 _validate_identifier("telemetry mapping name", telemetry_name)
-                signal = mapping.resolved_signal(node_name, telemetry_name)
-                _validate_path("telemetry signal", signal, min_segments=3)
-                if mapping.to is not None and mapping.to not in self.nodes:
+            for packet_name, packet in node.packets.items():
+                _validate_identifier("telemetry packet name", packet_name)
+                for field_name in packet.fields:
+                    _validate_identifier("telemetry field name", field_name)
+            definitions = node.telemetry_packets(node_name)
+            self._validate_telemetry_routes_are_distinct(node_name, definitions)
+            for definition in definitions:
+                to = definition.addressing.to
+                if to is not None and to not in self.nodes:
                     raise ValueError(
-                        f"telemetry mapping {node_name}.{telemetry_name} is addressed to "
-                        f"unknown node {mapping.to!r}"
+                        f"telemetry mapping {definition.label} is addressed to unknown node {to!r}"
                     )
-                wire_length = mapping.offset + mapping.length
+                try:
+                    SignalLayout(
+                        tuple(
+                            signal_field_for_mapping(name, layout)
+                            for name, _signal, layout in definition.fields
+                        )
+                    )
+                except (SignalCodecError, TelemetryCodecError) as exc:
+                    raise ValueError(f"telemetry packet {definition.label}: {exc}") from exc
+                wire_length = definition.payload_length
                 if wire_length > node.max_packet_bytes:
                     raise ValueError(
-                        f"telemetry mapping {node_name}.{telemetry_name} needs a "
+                        f"telemetry mapping {definition.label} needs a "
                         f"{wire_length}-byte payload, over {node_name!r} "
                         f"max_packet_bytes={node.max_packet_bytes}"
                     )
-                if not signal.startswith(f"{node_name}.telemetry."):
-                    raise ValueError(
-                        f"telemetry mapping {node_name}.{telemetry_name} resolves to {signal!r}; "
-                        f"expected it to start with {node_name}.telemetry."
+                for name, signal, _layout in definition.fields:
+                    # A shorthand mapping is labelled by its own name; a packet field by both.
+                    owner = (
+                        definition.label
+                        if definition.label == f"{node_name}.{name}"
+                        else f"{definition.label}.{name}"
                     )
-                previous_owner = owners_by_signal.setdefault(
-                    signal, f"{node_name}.{telemetry_name}"
-                )
-                current_owner = f"{node_name}.{telemetry_name}"
-                if previous_owner != current_owner:
-                    raise ValueError(
-                        f"telemetry signal {signal!r} is mapped by both "
-                        f"{previous_owner} and {current_owner}"
-                    )
+                    _validate_path("telemetry signal", signal, min_segments=3)
+                    if not signal.startswith(f"{node_name}.telemetry."):
+                        raise ValueError(
+                            f"telemetry mapping {owner} resolves to {signal!r}; "
+                            f"expected it to start with {node_name}.telemetry."
+                        )
+                    previous_owner = owners_by_signal.setdefault(signal, owner)
+                    if previous_owner != owner:
+                        raise ValueError(
+                            f"telemetry signal {signal!r} is mapped by both "
+                            f"{previous_owner} and {owner}"
+                        )
+        self._validate_rule_signals()
+
+    def _validate_rule_signals(self) -> None:
+        """An inline OBC rule compares a number, so it cannot name a whole array."""
+
+        counts = self.telemetry_signal_counts()
+        for node_name, node in self.nodes.items():
+            for rule_name, rule in node.rules.items():
+                problem = rule_signal_problem(rule.signal, counts)
+                if problem is not None:
+                    raise ValueError(f"rule {node_name}.{rule_name}: {problem}")
 
 
 class WaitStep(BaseModel):
@@ -911,7 +1084,7 @@ class AssertStep(BaseModel):
     @field_validator("signal")
     @classmethod
     def _validate_signal(cls, value: str) -> str:
-        return _validate_path("assertion signal", value, min_segments=3)
+        return _validate_signal_reference("assertion signal", value)
 
     @field_validator("name")
     @classmethod
@@ -1036,7 +1209,7 @@ def validate_scenario_references(scenario: ScenarioScript, setup: TestbedConfig)
 
     errors: list[str] = []
     configured_nodes = frozenset(setup.nodes)
-    telemetry_signals = setup.telemetry_signal_names()
+    telemetry_signals = setup.telemetry_signal_counts()
 
     for index, step in enumerate(scenario.steps, start=1):
         prefix = f"step {index} ({step.action})"
@@ -1050,8 +1223,10 @@ def validate_scenario_references(scenario: ScenarioScript, setup: TestbedConfig)
                 )
         elif isinstance(step, SendCommandStep):
             _validate_command_reference(step, setup, configured_nodes, prefix, errors)
-        elif isinstance(step, AssertStep) and step.signal not in telemetry_signals:
-            errors.append(f"{prefix}: assertion signal {step.signal!r} is not mapped")
+        elif isinstance(step, AssertStep):
+            problem = signal_reference_problem(step.signal, telemetry_signals)
+            if problem is not None:
+                errors.append(f"{prefix}: assertion {problem}")
 
     if errors:
         raise ScenarioReferenceError("; ".join(errors))
@@ -1219,6 +1394,68 @@ def _validate_path(kind: str, value: str, *, min_segments: int) -> str:
     return value
 
 
+def split_signal_reference(reference: str) -> tuple[str, int | None]:
+    """Split ``path`` or ``path[i]`` into the signal path and the element index."""
+
+    match = _SIGNAL_REF_RE.fullmatch(reference)
+    if match is None:
+        raise ValueError(f"invalid telemetry signal reference {reference!r}")
+    index = match.group("index")
+    return match.group("base"), None if index is None else int(index)
+
+
+def signal_reference_problem(reference: str, counts: dict[str, int]) -> str | None:
+    """Why ``reference`` does not name a configured signal or array element, or ``None``.
+
+    ``counts`` maps each configured signal to its element count (1 for a scalar).
+    """
+
+    signal, index = split_signal_reference(reference)
+    if signal not in counts:
+        return f"signal {reference!r} is not mapped"
+    count = counts[signal]
+    if index is None:
+        return None
+    if count == 1:
+        return f"signal {reference!r} indexes {signal!r}, which is not an array"
+    if index >= count:
+        return (
+            f"signal {reference!r} is out of range: {signal!r} has {count} elements (0-{count - 1})"
+        )
+    return None
+
+
+def rule_signal_problem(reference: str, counts: dict[str, int]) -> str | None:
+    """Why an OBC rule cannot watch ``reference``, or ``None``.
+
+    A rule compares one number, so it may name a scalar signal or one element of an array,
+    not a whole array. A signal the setup does not map at all is not reported: rules have
+    always been allowed to watch telemetry nothing produces yet.
+    """
+
+    signal, index = split_signal_reference(reference)
+    if signal not in counts:
+        return None
+    problem = signal_reference_problem(reference, counts)
+    if problem is None and index is None and counts[signal] > 1:
+        problem = (
+            f"signal {reference!r} is an array of {counts[signal]}; a rule compares one "
+            f"number, so name an element such as {signal}[0]"
+        )
+    return problem
+
+
+def _validate_signal_reference(kind: str, value: str) -> str:
+    match = _SIGNAL_REF_RE.fullmatch(value)
+    if match is None:
+        raise ValueError(
+            f"{kind} must be a dot-separated path of identifiers, for example "
+            "'eps.telemetry.voltage', or 'eps.telemetry.cells[0]' for one array element"
+        )
+    _validate_path(kind, match.group("base"), min_segments=3)
+    return value
+
+
 def _validate_fault_type_target_combination(
     fault_type: FaultType,
     target: str,
@@ -1273,7 +1510,11 @@ __all__ = [
     "ScenarioStep",
     "SendCommandStep",
     "SocketCanTransportConfig",
+    "TelemetryFieldLayout",
     "TelemetryMapping",
+    "TelemetryPacket",
+    "TelemetryPacketDefinition",
+    "TelemetryPacketField",
     "TestbedConfig",
     "TransportConfig",
     "VirtualCycleCount",
@@ -1285,5 +1526,8 @@ __all__ = [
     "parse_obc_rules_file",
     "parse_scenario",
     "parse_testbed_config",
+    "rule_signal_problem",
+    "signal_reference_problem",
+    "split_signal_reference",
     "validate_scenario_references",
 ]

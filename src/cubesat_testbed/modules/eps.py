@@ -36,6 +36,9 @@ from cubesat_testbed.transport.base import EndpointId
 if TYPE_CHECKING:
     from cubesat_testbed.modules.registry import ModuleBuildContext
 
+EPS_BATTERY_CELL_COUNT = 2
+"""Series cells in the reference battery (2S: 6.0 V empty, 8.4 V full by default)."""
+
 EPS_PAYLOAD_RAIL_ON_COMMAND = "eps_payload_rail_on"
 EPS_PAYLOAD_RAIL_OFF_COMMAND = "eps_payload_rail_off"
 EPS_SET_POWER_MODE_COMMAND = "eps_set_power_mode"
@@ -258,6 +261,25 @@ class GenericEpsModule(SimulatedModule):
         return _coerce_non_negative_float_value(self.model_path("battery_voltage_v"), resolved)
 
     @property
+    def cell_voltages_v(self) -> tuple[float, ...]:
+        """Per-cell voltages of the series battery, summing to ``battery_voltage_v``.
+
+        Healthy cells share the pack voltage equally. With ``battery_cell_dead`` active the
+        whole ``battery_cell_dead_voltage_drop_v`` sits on the last cell, which is what a
+        per-cell monitor sees when one cell of a string fails.
+        """
+
+        pack_v = self.battery_voltage_v
+        drop_v = (
+            self.config.battery_cell_dead_voltage_drop_v
+            if self.is_fault_active(EPS_BATTERY_CELL_DEAD_FAULT)
+            else 0.0
+        )
+        healthy_v = (pack_v + drop_v) / EPS_BATTERY_CELL_COUNT
+        last_v = max(0.0, pack_v - healthy_v * (EPS_BATTERY_CELL_COUNT - 1))
+        return (*([healthy_v] * (EPS_BATTERY_CELL_COUNT - 1)), last_v)
+
+    @property
     def solar_input_w(self) -> float:
         """Effective solar input power after named faults and state overrides."""
 
@@ -398,6 +420,7 @@ class GenericEpsModule(SimulatedModule):
         values: dict[str, object] = {
             "battery_percent": self.battery_percent,
             "battery_voltage_v": self.battery_voltage_v,
+            "cell_voltages_v": self.cell_voltages_v,
             "load_power_w": self.load_power_w,
             "solar_input_w": self.solar_input_w,
             "power_mode": self.power_mode.value,

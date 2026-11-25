@@ -25,12 +25,12 @@ from cubesat_testbed.config import (
     InMemoryTransportConfig,
     ScenarioScript,
     SendCommandStep,
-    TelemetryMapping,
     TestbedConfig,
     WaitStep,
     load_obc_rules_file,
     load_scenario,
     load_testbed_config,
+    rule_signal_problem,
 )
 from cubesat_testbed.dut.manager import NodeParticipant, resolve_participants
 from cubesat_testbed.engine import (
@@ -57,8 +57,7 @@ from cubesat_testbed.protocol.csp_v2 import (
 )
 from cubesat_testbed.protocol.telemetry_codec import (
     TelemetryCodecError,
-    decode_telemetry_value,
-    encode_telemetry_value,
+    TelemetryPacketCodec,
 )
 from cubesat_testbed.report.recorder import RunRecorder
 from cubesat_testbed.scenario.assertions import (
@@ -153,20 +152,27 @@ class _CommandRoute:
 
 @dataclass(frozen=True, slots=True)
 class _TelemetryRoute:
-    """CSP routing plus wire-codec metadata for one configured telemetry signal.
+    """CSP routing plus wire codec for one configured telemetry packet.
 
-    A frame the testbed sends for a simulated node is addressed to the node the mapping
-    names with ``to`` (an OBC, whose own CAN filter then accepts it) and, when the mapping
-    names none, to its own sender: the in-memory bus's monitor queue sees every frame
-    whatever its destination, like a promiscuous bus analyzer, but a real node on a real
-    bus does not. A frame the testbed *receives* is matched on the sender's address and
-    the ports, and on the destination only when the mapping named one: a real EPS sends its
-    housekeeping to the OBC, never to itself, and that must still be the EPS's signal.
+    A packet carries one or more signals: a ``[nodes.<node>.telemetry.<name>]`` mapping
+    is a packet with one, a ``[nodes.<node>.packets.<name>]`` one with several. The
+    sender encodes them all into one payload and the receiver decodes them all from it.
+
+    A frame the testbed sends for a simulated node is addressed to the node the packet
+    names with ``to`` (an OBC, whose own CAN filter then accepts it) and, when it names
+    none, to its own sender: the in-memory bus's monitor queue sees every frame whatever
+    its destination, like a promiscuous bus analyzer, but a real node on a real bus does
+    not. A frame the testbed *receives* is matched on the sender's address and the ports,
+    and on the destination only when the packet named one: a real EPS sends its
+    housekeeping to the OBC, never to itself, and that must still be the EPS's packet.
     """
 
-    signal: str
+    label: str
     node_name: str
-    field_name: str
+    signals: tuple[str, ...]
+    field_names: tuple[str, ...]
+    """The keys of each signal in the module's ``telemetry()`` dict, in ``signals`` order."""
+    codec: TelemetryPacketCodec
     source_address: int
     destination_address: int
     destination_named: bool
@@ -174,10 +180,15 @@ class _TelemetryRoute:
     source_port: int
     priority: int
     flags: int
-    mapping: TelemetryMapping
+
+    @property
+    def name(self) -> str:
+        """How the trace and drop reports name this packet: its signal, if it has one."""
+
+        return self.signals[0] if len(self.signals) == 1 else self.label
 
     def matches(self, fields: PacketFields) -> bool:
-        """Whether a received packet is this signal's."""
+        """Whether a received packet is this one."""
 
         return (
             self.source_address == fields.source
@@ -185,6 +196,20 @@ class _TelemetryRoute:
             and self.source_port == fields.source_port
             and (not self.destination_named or self.destination_address == fields.destination)
         )
+
+    def encode(self, values: Mapping[str, object]) -> bytes:
+        """Encode the module's telemetry values (keyed by field name) into one payload."""
+
+        return self.codec.encode(values)
+
+    def decode(self, payload: bytes) -> dict[str, object]:
+        """Decode a received payload into each signal's value, keyed by signal path."""
+
+        decoded = self.codec.decode(payload)
+        return {
+            signal: decoded[field_name]
+            for signal, field_name in zip(self.signals, self.field_names, strict=True)
+        }
 
 
 @dataclass(slots=True)
@@ -209,8 +234,7 @@ class ScenarioRuntime:
     modules: dict[str, SimulatedModule]
     command_routes: tuple[_CommandRoute, ...]
     telemetry_routes: tuple[_TelemetryRoute, ...]
-    telemetry_routes_by_signal: dict[str, _TelemetryRoute]
-    telemetry_fields_by_node: dict[str, tuple[str, ...]]
+    telemetry_routes_by_node: dict[str, tuple[_TelemetryRoute, ...]]
     telemetry_order: tuple[str, ...]
     tick_order: tuple[str, ...]
     clock: Clock = field(default_factory=VirtualClock)
@@ -626,10 +650,15 @@ class ScenarioRunner:
             if not isinstance(module, _TelemetryReportingModule):
                 continue
             values = module.telemetry(now=self.runtime.engine.now)
-            for field_name in self.runtime.telemetry_fields_by_node[node_name]:
-                signal = f"{node_name}.telemetry.{field_name}"
-                route = self.runtime.telemetry_routes_by_signal[signal]
-                self._send_telemetry_route(route, values[field_name])
+            for route in self.runtime.telemetry_routes_by_node[node_name]:
+                missing = [name for name in route.field_names if name not in values]
+                if missing:
+                    raise ScenarioRuntimeError(
+                        f"module {node_name!r} reports no telemetry "
+                        f"{', '.join(repr(name) for name in missing)}, which {route.label} "
+                        "is configured to send"
+                    )
+                self._send_telemetry_route(route, values)
         self._run_current_events()
 
     def _run_current_events(self) -> None:
@@ -672,8 +701,10 @@ class ScenarioRunner:
             self._semantic_payloads_by_envelope[envelope.sequence] = payload
         return envelope
 
-    def _send_telemetry_route(self, route: _TelemetryRoute, value: object) -> TransportEnvelope:
-        payload = encode_telemetry_value(route.field_name, route.mapping, value)
+    def _send_telemetry_route(
+        self, route: _TelemetryRoute, values: Mapping[str, object]
+    ) -> TransportEnvelope:
+        payload = route.encode(values)
         return self._send_packet(
             CspFields(
                 priority=route.priority,
@@ -828,13 +859,7 @@ class ScenarioRunner:
 
         telemetry_route = self._telemetry_route_for_packet(packet)
         if telemetry_route is not None:
-            if self.runtime.recorder is not None:
-                # The frame this value is decoded from, for the report to link an
-                # assertion to; it only describes the run, nothing reads it back.
-                self._signal_evidence[telemetry_route.signal] = self.runtime.recorder.rx_frame_id(
-                    envelope
-                )
-            self._deliver_telemetry(telemetry_route, packet)
+            self._deliver_telemetry(telemetry_route, packet, envelope)
             return
 
         fields = packet.fields
@@ -882,9 +907,11 @@ class ScenarioRunner:
                 f"command {route.source_node}.{route.command} was not handled by {route.target_node}"
             )
 
-    def _deliver_telemetry(self, route: _TelemetryRoute, packet: PacketView) -> None:
+    def _deliver_telemetry(
+        self, route: _TelemetryRoute, packet: PacketView, envelope: TransportEnvelope
+    ) -> None:
         try:
-            value = decode_telemetry_value(route.field_name, route.mapping, packet.payload)
+            values = route.decode(packet.payload)
         except TelemetryCodecError as exc:
             # A payload the signal's codec cannot read (a value with no enum label, a
             # corrupted byte) is a packet the receiver discards, reported like any other
@@ -896,11 +923,22 @@ class ScenarioRunner:
                     destination=packet.fields.destination,
                     sender=packet.fields.source,
                     reason="undecodable",
-                    detail=f"{route.signal}: {exc}",
+                    detail=f"{route.name}: {exc}",
                 )
             )
             return
-        self.runtime.engine.schedule_telemetry(route.signal, value, source=route.node_name)
+        # The frame these values were decoded from, for the report to link an assertion
+        # to; it only describes the run, nothing reads it back.
+        frame_id = (
+            None if self.runtime.recorder is None else self.runtime.recorder.rx_frame_id(envelope)
+        )
+        for signal, value in values.items():
+            for sample_signal, sample_value in _signal_samples(signal, value):
+                if frame_id is not None:
+                    self._signal_evidence[sample_signal] = frame_id
+                self.runtime.engine.schedule_telemetry(
+                    sample_signal, sample_value, source=route.node_name
+                )
 
     def _resolve_command_route(self, step: SendCommandStep) -> _CommandRoute:
         candidates = [
@@ -1070,6 +1108,8 @@ def build_runtime(
     normalized_obc_rules = (
         None if obc_rules is None else {node: tuple(rules) for node, rules in obc_rules.items()}
     )
+    if normalized_obc_rules is not None:
+        _check_rule_signals(setup, normalized_obc_rules)
 
     modules: dict[str, SimulatedModule] = {}
     for node_name, registration in build_order:
@@ -1099,8 +1139,7 @@ def build_runtime(
         if participant.is_simulated and node_name not in modules:
             raise ScenarioRuntimeError(f"simulated node {node_name!r} has no runtime module")
 
-    telemetry_routes_by_signal = {route.signal: route for route in telemetry_routes}
-    telemetry_fields_by_node, telemetry_order = _telemetry_plan_from_routes(telemetry_routes)
+    telemetry_routes_by_node, telemetry_order = _telemetry_plan_from_routes(telemetry_routes)
     tick_order = tuple(node_name for node_name, _registration in build_order)
 
     return ScenarioRuntime(
@@ -1112,8 +1151,7 @@ def build_runtime(
         modules=modules,
         command_routes=command_routes,
         telemetry_routes=telemetry_routes,
-        telemetry_routes_by_signal=telemetry_routes_by_signal,
-        telemetry_fields_by_node=telemetry_fields_by_node,
+        telemetry_routes_by_node=telemetry_routes_by_node,
         telemetry_order=telemetry_order,
         tick_order=tick_order,
         clock=VirtualClock() if clock is None else clock,
@@ -1121,6 +1159,23 @@ def build_runtime(
         recorder=recorder,
         bus_faults=bus_faults,
     )
+
+
+def _check_rule_signals(
+    setup: TestbedConfig, obc_rules: Mapping[str, tuple[ObcPeerRule, ...]]
+) -> None:
+    """Refuse a rules-file rule on a whole array or a missing element, before the run.
+
+    The setup already checks its inline rules the same way; a rules file is parsed
+    without the setup, so its rules are checked here, where both meet.
+    """
+
+    counts = setup.telemetry_signal_counts()
+    for node_name, rules in obc_rules.items():
+        for rule in rules:
+            problem = rule_signal_problem(rule.condition.signal, counts)
+            if problem is not None:
+                raise ScenarioRuntimeError(f"rule {node_name}.{rule.name}: {problem}")
 
 
 def _scheduler_for(engine: DiscreteEventEngine) -> Callable[[int, Callable[[], None]], None]:
@@ -1315,10 +1370,31 @@ def _command_annotation(route: _CommandRoute) -> str:
 
 def _telemetry_annotation(route: _TelemetryRoute, payload: bytes) -> str:
     try:
-        value = decode_telemetry_value(route.field_name, route.mapping, payload)
+        values = route.decode(payload)
     except TelemetryCodecError as exc:
-        return f"telemetry {route.signal} undecodable={str(exc)!r}"
-    return f"telemetry {route.signal}={value!r}"
+        return f"telemetry {route.name} undecodable={str(exc)!r}"
+    if len(values) == 1:
+        ((signal, value),) = values.items()
+        return f"telemetry {signal}={value!r}"
+    fields = " ".join(
+        f"{field_name}={values[signal]!r}"
+        for signal, field_name in zip(route.signals, route.field_names, strict=True)
+    )
+    return f"telemetry {route.label} {fields}"
+
+
+def _signal_samples(signal: str, value: object) -> list[tuple[str, object]]:
+    """The telemetry events one decoded field produces.
+
+    A scalar is one event. An array is the whole tuple under its own name and then each
+    element as ``signal[i]``, so an assertion or an OBC rule can watch one element as a
+    plain number, and the HTML report plots each element.
+    """
+
+    samples: list[tuple[str, object]] = [(signal, value)]
+    if isinstance(value, tuple):
+        samples.extend((f"{signal}[{index}]", element) for index, element in enumerate(value))
+    return samples
 
 
 def _build_command_routes(setup: TestbedConfig) -> tuple[_CommandRoute, ...]:
@@ -1345,45 +1421,62 @@ def _build_command_routes(setup: TestbedConfig) -> tuple[_CommandRoute, ...]:
 
 def _build_telemetry_routes(setup: TestbedConfig) -> tuple[_TelemetryRoute, ...]:
     routes: list[_TelemetryRoute] = []
-    for node_name, node in setup.nodes.items():
-        for telemetry_name, mapping in node.telemetry.items():
-            signal = mapping.resolved_signal(node_name, telemetry_name)
+    for definition in setup.telemetry_packets():
+        node_name = definition.node_name
+        node = setup.nodes[node_name]
+        signals: list[str] = []
+        field_names: list[str] = []
+        for _config_name, signal, _layout in definition.fields:
             signal_node, field_name = _split_telemetry_signal(signal)
             if signal_node != node_name:
                 raise ScenarioRuntimeError(
                     f"telemetry signal {signal!r} does not belong to node {node_name!r}"
                 )
-            routes.append(
-                _TelemetryRoute(
-                    signal=signal,
-                    node_name=node_name,
-                    field_name=field_name,
-                    source_address=node.address,
-                    destination_address=(
-                        node.address if mapping.to is None else setup.nodes[mapping.to].address
-                    ),
-                    destination_named=mapping.to is not None,
-                    destination_port=mapping.destination_port,
-                    source_port=mapping.source_port,
-                    priority=mapping.priority,
-                    flags=mapping.flags,
-                    mapping=mapping,
-                )
+            signals.append(signal)
+            field_names.append(field_name)
+        try:
+            codec = TelemetryPacketCodec.build(
+                [
+                    (field_name, layout)
+                    for field_name, (_name, _signal, layout) in zip(
+                        field_names, definition.fields, strict=True
+                    )
+                ]
             )
+        except TelemetryCodecError as exc:
+            raise ScenarioRuntimeError(f"telemetry packet {definition.label}: {exc}") from exc
+        addressing = definition.addressing
+        routes.append(
+            _TelemetryRoute(
+                label=definition.label,
+                node_name=node_name,
+                signals=tuple(signals),
+                field_names=tuple(field_names),
+                codec=codec,
+                source_address=node.address,
+                destination_address=(
+                    node.address if addressing.to is None else setup.nodes[addressing.to].address
+                ),
+                destination_named=addressing.to is not None,
+                destination_port=addressing.destination_port,
+                source_port=addressing.source_port,
+                priority=addressing.priority,
+                flags=addressing.flags,
+            )
+        )
     return tuple(routes)
 
 
 def _telemetry_plan_from_routes(
     routes: tuple[_TelemetryRoute, ...],
-) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
-    fields_by_node: dict[str, list[str]] = {}
-    order: list[str] = []
+) -> tuple[dict[str, tuple[_TelemetryRoute, ...]], tuple[str, ...]]:
+    routes_by_node: dict[str, list[_TelemetryRoute]] = {}
     for route in routes:
-        if route.node_name not in fields_by_node:
-            fields_by_node[route.node_name] = []
-            order.append(route.node_name)
-        fields_by_node[route.node_name].append(route.field_name)
-    return {node: tuple(fields) for node, fields in fields_by_node.items()}, tuple(order)
+        routes_by_node.setdefault(route.node_name, []).append(route)
+    return (
+        {node: tuple(node_routes) for node, node_routes in routes_by_node.items()},
+        tuple(routes_by_node),
+    )
 
 
 def _build_order(

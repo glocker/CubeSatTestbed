@@ -19,7 +19,7 @@ src/cubesat_testbed/
   protocol/csp_v1_packet.py # whole-packet frame shared by the v1 KISS and ZeroMQ codecs
   protocol/csp_v1_kiss.py # CSP v1 KISS framing, CRC-32C and receive state machine
   protocol/csp_v1_zmq.py  # CSP v1 ZeroMQ message layout (destination byte, header, payload)
-  protocol/signal_codec.py    # Byte-aligned scalar signal codec
+  protocol/signal_codec.py    # Signal codec: byte and bit fields, arrays
   protocol/telemetry_codec.py # Bridges TelemetryMapping config to signal_codec
   transport/base.py       # Bus adapter interface
   transport/factory.py    # Config-to-adapter construction
