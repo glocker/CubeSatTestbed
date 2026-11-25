@@ -127,8 +127,12 @@ def test_a_command_to_a_simulated_target_is_still_delivered_with_its_payload() -
     assert runner._semantic_payloads_by_envelope == {}
 
 
-def test_an_ambiguous_route_is_still_a_hard_error() -> None:
-    """Observing is for routes whose target is external; a config bug stays loud."""
+def test_an_ambiguous_route_is_rejected_when_the_setup_loads() -> None:
+    """Observing is for routes whose target is external; a config bug stays loud.
+
+    Two commands that put the same bytes on the wire used to pass validation and abort the run
+    at the first frame; they are now refused before it starts.
+    """
 
     text = SETUP.format(
         eps_mode="software", payload_mode="software", payload_module="", eps_command="shed"
@@ -137,9 +141,6 @@ def test_an_ambiguous_route_is_still_a_hard_error() -> None:
         '\n[nodes.eps.commands.shed_twin]\ntarget = "payload"\ndestination_port = 10\n'
         'source_port = 11\npayload_hex = "00"\n'
     )
-    setup = parse_testbed_config(text)
-    runtime = build_runtime(setup)
-    runtime.transport.send(pack(EPS_TO_PAYLOAD, b"\x00"), source=2)
 
-    with pytest.raises(Exception, match="multiple configured routes"):
-        ScenarioRunner(runtime, output=io.StringIO()).run(parse_scenario(WAIT, setup=setup))
+    with pytest.raises(ValueError, match="cannot tell them apart"):
+        parse_testbed_config(text)
