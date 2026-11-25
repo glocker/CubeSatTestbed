@@ -81,6 +81,10 @@ def compare_values(
     """Compare ``actual`` and ``expected`` using a scenario assertion operator."""
 
     op = _coerce_operator(operator)
+    # An array signal decodes to a tuple and a scenario's YAML list arrives as a list;
+    # compare them as sequences, not as two different types.
+    if isinstance(actual, tuple) and isinstance(expected, list):
+        expected = tuple(expected)
     if op is AssertionOperator.EQ:
         passed = actual == expected
     elif op is AssertionOperator.NE:

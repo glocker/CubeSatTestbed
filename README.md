@@ -86,10 +86,12 @@ them, and refuses to overwrite existing files unless you pass `--force`.
 `cubesat-testbed init --list` shows what else is available:
 
 ```text
-default        in-memory three-node satellite; OBC sheds the payload on a low battery
-socketcan-hil  the same run against a real bus: payload as hardware on SocketCAN vcan0
-csp-v1         the same satellite as CSP v1: CFP1 framing, 5-bit addresses, telemetry sent to the OBC
-module-params  retuning a built-in module through [nodes.<node>.params]
+default           in-memory three-node satellite; OBC sheds the payload on a low battery
+socketcan-hil     the same run against a real bus: payload as hardware on SocketCAN vcan0
+csp-v1            the same satellite as CSP v1: CFP1 framing, 5-bit addresses, telemetry sent to the OBC
+eps-housekeeping  one EPS housekeeping packet with seven fields, an array and bit fields
+module-params     retuning a built-in module through [nodes.<node>.params]
+thermal-heater    an OBC heater loop closing over the bus; companion to docs/writing-a-module.md
 ```
 
 Working on the testbed itself instead of with it? See
@@ -344,6 +346,10 @@ sudo ip link set up vcan0
   (`protocol_version = 1` in the setup: CFP1 framing on CAN, 5-bit addresses), over CAN,
   a KISS serial line or a ZeroMQ hub; classic CAN 2.0, extended 29-bit IDs. See
   [`docs/v1-scope.md`](docs/v1-scope.md#csp-v1).
+- Telemetry: several signals per CSP packet (`[nodes.<node>.packets.<name>]`), as a real
+  housekeeping struct; byte-aligned integers and floats of either byte order, bit fields
+  (most significant bit first) and fixed-length arrays, with `scale`/`offset`. See
+  [`docs/v1-scope.md`](docs/v1-scope.md#telemetry-wire-encoding).
 - Modules: Generic EPS, OBC Peer (rule engine), Simple Payload, RC thermal
   node -- plus your own, registered the same way the built-ins are
   ([`docs/writing-a-module.md`](docs/writing-a-module.md)).

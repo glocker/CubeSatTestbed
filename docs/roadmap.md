@@ -27,7 +27,7 @@
 - [x] In-memory bus adapter for CI/integration tests.
 - [x] Deterministic DES core loop with virtual timeline.
 - [x] TOML setup parser and YAML scenario runner schemas.
-- [x] Byte-aligned signal codec.
+- [x] Byte-aligned signal codec (bit fields and arrays came after v1.1.0, see below).
 - [x] Fault Injection Engine: state override, signal override, named faults.
 - [x] Generic EPS, OBC Peer and Simple Payload modules.
 - [x] Console PASS/FAIL scenario report.
@@ -109,6 +109,11 @@ verified in CI before any codec or adapter code.
        report and (in-memory) bus faults. Forty-four golden vectors from libcsp `v2.1` run as
        CSP v1 pin the layouts, and a real libcsp process exchanged packets with the testbed
        on all three links; the v1 and v2 codecs share no code.
+7. [x] **Telemetry packets, bit fields and arrays.** Several signals share one CSP packet
+       (`[nodes.<node>.packets.<name>]`), as a real housekeeping struct does; fields may be
+       bit fields (most significant bit first) or fixed-length arrays, and `signal[i]` names
+       one element in assertions and OBC rules. Checked against a QUBE beacon decoded by
+       `satnogs-decoders` and against libcsp's own CSP headers.
 
 ## Next
 

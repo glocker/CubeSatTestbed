@@ -193,9 +193,19 @@ length = 4
 type = "float"
 ```
 
-The v1 signal codec is byte-aligned and scalar-only (`uint`, `int`, `float`,
-big/little endian, `scale`, `offset_value`). Two consequences for module
-authors:
+Several signals can share one packet, as a real board's housekeeping does:
+declare `[nodes.<node>.packets.<name>]` and put each signal under its
+`.fields`. The module does not change: it still returns one value per signal
+from `telemetry()`, keyed by the signal's name, and the runner encodes every
+field of a packet into one payload. A field may be a bit field (`bit_offset`,
+`bit_length`) or a fixed-length array (`count`); for an array, return a tuple
+or list of exactly `count` values. See
+[`configs/schema/module_schema.md`](../configs/schema/module_schema.md#signal-codec)
+and the `eps-housekeeping` example, whose `cell_voltages_v` is an array
+returned by `generic_eps`.
+
+The codec encodes integers (byte-aligned or bit fields), IEEE 754 floats,
+`scale` and `offset_value`. Three consequences for module authors:
 
 - **A continuously varying quantity should be a `float` field.** A scaled
   integer requires the physical value to land on an exact raw integer, which a
@@ -204,6 +214,8 @@ authors:
   labels. This is why the thermal module reports `heater_status` as `"on"` /
   `"off"` rather than a bare `bool`: the label is what the enum maps, and it
   reads correctly in an assertion and in a `--trace` line.
+- **A flag can be a `bool`.** It packs as 1/0 into an integer field, typically
+  a 1-bit field, and reads back as `1`/`0`.
 
 A field your module exposes but no setup file maps is simply never
 transmitted; it costs nothing, and a signal that *is* mapped but never emitted

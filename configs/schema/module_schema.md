@@ -31,9 +31,14 @@ Invalid combinations fail during Pydantic validation. Examples:
 - `hardware` nodes require `transport.type = "socketcan"`;
 - command `target` values must reference configured nodes;
 - telemetry signals must resolve under `<node>.telemetry.*` and be unique;
-- telemetry mappings must declare a valid byte-aligned wire layout (see
-  "Signal codec v1" below) — there is no way to configure a telemetry signal
-  without saying how it is encoded on the wire.
+- telemetry mappings and packet fields must declare a valid wire layout (see
+  "Signal codec" below) — there is no way to configure a telemetry signal
+  without saying how it is encoded on the wire;
+- the fields of one telemetry packet must not overlap, and two packets of one
+  node must not share source and destination ports (unless `to` names
+  different nodes), since a receiver could not tell them apart;
+- an index (`signal[i]`) in an assertion or a rule must name an element of an
+  array field, and a rule must not name a whole array.
 - `rules` is only valid for `module_type = "obc_peer"` nodes.
 - `params` is only valid on `simulated` nodes and must match the target
   module's own parameter names/types/ranges.
@@ -52,9 +57,41 @@ flags = 0
 payload_hex = "00"
 ```
 
-Telemetry mappings define the CSP ports/flags, the byte-aligned wire layout
-(required — see "Signal codec v1" below), and optional passive metadata. If
-`signal` is omitted, it is derived as `<node>.telemetry.<mapping-name>`.
+Telemetry travels in packets. A packet with several signals — a housekeeping
+struct — is declared under `nodes.<node>.packets.<name>` with the CSP
+addressing, and each signal under `.fields.<field>` with its wire layout (see
+"Signal codec" below):
+
+```toml
+[nodes.eps.packets.housekeeping]
+source_port = 20
+destination_port = 20
+to = "obc"            # optional: who the frames are addressed to
+priority = 2
+flags = 0
+
+[nodes.eps.packets.housekeeping.fields.battery_voltage_v]
+offset = 0
+length = 4
+type = "float"
+
+[nodes.eps.packets.housekeeping.fields.cell_voltages_v]
+offset = 4
+length = 4
+count = 2             # an array: two floats, bytes 4-11
+type = "float"
+
+[nodes.eps.packets.housekeeping.fields.power_mode]
+offset = 12
+bit_offset = 0        # the byte's most significant bit
+bit_length = 2
+type = "uint"
+```
+
+A telemetry mapping is the shorthand for a packet holding one signal: the same
+CSP ports/flags/`to` and the wire layout in one table, plus optional passive
+metadata. If `signal` is omitted (in either form), it is derived as
+`<node>.telemetry.<mapping-or-field-name>`.
 
 ```toml
 [nodes.eps.telemetry.battery_percent]
@@ -176,31 +213,40 @@ explicit unit — `s`/`sec`/`seconds`, `ms`/`millisecond(s)`, or
 `us`/`microsecond(s)` — for example `"3s"` or `"500ms"`. The bare integer `0`
 is the sole exception, since it is unambiguous in any unit.
 
-## Signal codec v1
+## Signal codec
 
-Fields are byte-aligned only:
+A field is byte-aligned or a bit field:
 
-- `offset`: byte offset;
+- `offset`: byte offset (for a bit field, the byte it starts in);
 - `length`: field byte length (4 or 8 for `type = "float"`; IEEE 754 binary32/
-  binary64);
+  binary64) — byte-aligned fields only;
+- `bit_offset` and `bit_length`: a bit field instead of `length`. `bit_offset`
+  is 0-7, counted from the most significant bit of the byte at `offset`;
+  `bit_length` is 1-64, and the field is read most significant bit first,
+  across byte boundaries if needed (Kaitai Struct's `bN`, CCSDS). `type` is
+  `"uint"` or `"int"` (two's complement over `bit_length`); `endian` does not
+  apply and is refused;
+- `count`: elements of a fixed-length array (default 1, a scalar). Elements sit
+  back to back, each `length` bytes or `bit_length` bits; the value is a tuple,
+  and `<signal>[i]` names element `i` in assertions and OBC rules;
 - `type`: `"uint"`, `"int"`, or `"float"`;
-- `endian`: `"big"` (default) or `"little"`;
+- `endian`: `"big"` (default) or `"little"`, byte-aligned fields only;
 - `scale` / `offset_value`: physical/raw conversion, `physical = raw * scale +
-  offset_value`. Integer fields require the physical value to map to an
-  *exact* raw integer, so a continuously-varying value (e.g. a battery
+  offset_value`, per element. Integer fields require the physical value to map
+  to an *exact* raw integer, so a continuously-varying value (e.g. a battery
   percentage) should generally use `type = "float"` instead of a scaled
-  integer;
+  integer. A Python `bool` packs as 1/0 into an integer field;
 - optional passive metadata: `units`, `min`, `max`.
 
-Telemetry mappings may additionally declare `enum` (raw-value-string -> label)
-to bridge a non-numeric Python value to the scalar wire codec; the underlying
-codec itself has no notion of enums. No bit-level packing, arrays,
-Motorola/Intel bit numbering, or custom field plugins in v1.
+Fields may also declare `enum` (raw-value-string -> label) to bridge a
+non-numeric Python value to the wire codec; the codec itself only knows numbers.
+Not supported: little-endian bit numbering, nested structs, variant records or
+custom field plugins.
 
-Every telemetry mapping's `offset`/`length`/`type` are required: a configured
-signal is always encoded through this layout into its own CSP packet
-(several CAN frames when `offset + length` is over 4) when transmitted, and decoded back through the same layout when
-received — assertions and rules only ever see the decoded result, never a
-module's raw Python value. See
+Every field's layout is required: a configured signal is always encoded through
+it into its packet (several CAN frames when the payload is over 4 bytes) when
+transmitted, and decoded back through the same layout when received —
+assertions and rules only ever see the decoded result, never a module's raw
+Python value. See
 [`docs/v1-scope.md`](../../docs/v1-scope.md#telemetry-wire-encoding) for the
 full rationale.

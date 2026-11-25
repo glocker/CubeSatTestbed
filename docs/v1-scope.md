@@ -272,14 +272,34 @@ and configured telemetry is emitted once per virtual second (1,000,000 µs) via
 a recurring engine timer; this cadence is fixed in v1, not yet configurable
 per node.
 
-## Signal codec v1
+## Signal codec
 
-The v1 binary signal codec (`cubesat_testbed.protocol.signal_codec`) is
-intentionally small: byte offsets only, no bit-level packing, `big`/`little`
-endianness, scalar signed/unsigned integers and IEEE 754 floats, `scale`/
-`offset` conversion, and optional passive metadata (`units`, `min`, `max`). No
-arrays, bit-level enums, Motorola/Intel bit numbering, or custom field plugins
-in v1.
+The binary signal codec (`cubesat_testbed.protocol.signal_codec`) places named
+fields at fixed positions in a payload:
+
+- **Byte-aligned fields**: a byte offset and a byte length, signed/unsigned
+  integers of either byte order (`big`/`little`) and IEEE 754 binary32/binary64
+  floats.
+- **Bit fields**: a byte offset, a bit offset inside that byte (0-7) and a bit
+  length (1-64), unsigned or two's complement. Bits are numbered from the most
+  significant bit of a byte and a field is read most significant bit first,
+  across byte boundaries if it needs to: the order of Kaitai Struct's `bN`
+  types, CCSDS and network headers. There is one bit order on purpose, and
+  `endian` does not apply to a bit field.
+- **Fixed-length arrays** of either kind (`count`): the elements sit back to
+  back, each the field's own width, and the value is a tuple.
+
+Every element gets the same `scale`/`offset` conversion; `units`, `min` and
+`max` are passive metadata. Fields of one payload must not overlap; gaps are
+sent as zero. Still out of scope: little-endian bit numbering
+(Motorola/Intel-style choices), enums beyond the label map below, nested
+structs, variant records and custom field plugins. They are added when a real
+layout needs them.
+
+The codec is checked against bytes it did not produce
+(`tests/test_layout_vectors.py`): a QUBE beacon decoded by the Kaitai Struct
+parser of `satnogs-decoders`, and the CSP v1 and v2 headers libcsp wrote into
+the golden vectors, read as bit fields.
 
 ## CFP2 fragmentation and reassembly
 
@@ -334,8 +354,9 @@ A dropped packet does not fail the run by itself; an assertion that needed it
 does. Reassembly runs on virtual time, so the same frames at the same times give
 the same result on every run.
 
-Still out of scope: other physical layers, RDP, and a packet carrying several
-telemetry signals (each signal is still its own packet).
+Still out of scope: other physical layers and RDP. A packet carrying several
+telemetry signals is a telemetry *packet* (see *Telemetry wire encoding*); it is
+fragmented like any other packet.
 
 ## CSP v1
 
@@ -519,13 +540,26 @@ authentication (CURVE), and CSP v1's one-byte address prefix.
 
 ## Telemetry wire encoding
 
-Every configured telemetry signal requires a byte-aligned wire layout
-(`offset`, `length`, `type`, and optionally `endian`/`scale`/`offset_value`) —
-see [`configs/schema/module_schema.md`](../configs/schema/module_schema.md)
-for the field reference. A simulated module's telemetry is encoded through
-that layout into its own CSP packet (one signal per packet, as one or several
-CAN frames) and sent on the bus every
-physical step; the scenario runner (and any assertion) only ever observes
+Every configured telemetry signal requires a wire layout (`offset`, then
+`length` or `bit_offset`/`bit_length`, `type`, and optionally `count`/
+`endian`/`scale`/`offset_value`) — see
+[`configs/schema/module_schema.md`](../configs/schema/module_schema.md) for the
+field reference. Signals travel in telemetry packets, declared one of two ways:
+
+- `[nodes.<node>.packets.<name>]` holds the addressing (ports, `to`, priority,
+  flags) once, and each `[nodes.<node>.packets.<name>.fields.<field>]` one
+  signal's place in the payload: one packet carrying a whole housekeeping
+  struct, the way a real board sends it. The packaged `eps-housekeeping`
+  example sends seven EPS signals, including an array and two bit fields, as
+  one 25-byte packet.
+- `[nodes.<node>.telemetry.<name>]` is the shorthand for a packet holding that
+  one signal. Every setup written before packets existed is of this kind and
+  runs unchanged.
+
+A simulated module's telemetry is encoded through that layout, one packet per
+definition (as one or several CAN frames), and sent on the bus every physical
+step; the receiver decodes every field of a packet from it. The scenario
+runner (and any assertion) only ever observes
 telemetry by decoding that same frame back, the same path a real bus listener
 or hardware peer would use. There is no path that lets an assertion read a
 module's Python state directly.
@@ -546,7 +580,19 @@ Two consequences worth knowing:
   assertion's `timeout` accordingly.
 
 `cubesat_testbed.protocol.telemetry_codec` bridges declarative config to the
-scalar-only signal codec.
+signal codec.
+
+### Arrays in scenarios and rules
+
+An array field's signal (`eps.telemetry.cell_voltages_v`) has a tuple value, and
+each element is also its own signal, `eps.telemetry.cell_voltages_v[1]`, decoded
+from the same frame. An assertion may compare the whole array (`==` against a
+YAML list) or one element; an OBC rule compares one number, so it must name an
+element, and the setup is refused when an inline rule names a whole array (a
+rule from a rules file is checked when the run is built). An index past the end,
+or an index on a scalar signal, is refused when the scenario loads. The HTML
+report plots each element as a signal of its own. A `signal_override` fault
+replaces a whole array signal (give a list); there is no per-element override.
 
 ### Who a telemetry frame is addressed to
 
@@ -575,10 +621,11 @@ type = "float"
   itself are both read. With `to` only a frame addressed to that node counts.
 - `to` must name a configured node. It does not change the scenario's assertions, only the
   frames.
-- Each signal is its own packet, so two of a node's signals on the same source and destination
-  ports cannot be told apart and the setup is refused when it loads, naming both. A mapping
-  without `to` overlaps every other on the same ports; mappings naming different nodes with `to`
-  do not.
+- A receiver tells a node's packets apart by their ports (and `to`), so two packets of one node
+  on the same source and destination ports cannot be told apart and the setup is refused when
+  it loads, naming both: signals that belong together go in one
+  `[nodes.<node>.packets.<name>]`. A packet without `to` overlaps every other on the same ports;
+  packets naming different nodes with `to` do not. A single-signal mapping counts as a packet.
 
 Mind the ports on a real libcsp node: it can only `csp_bind` ports up to
 `CSP_PORT_MAX_BIND` (16 in the default build), so a real OBC cannot listen for telemetry on
@@ -586,8 +633,8 @@ the ports 20-22 the packaged examples use; pick a port a real receiver can bind 
 receiver is real (`to` plus, say, `destination_port = 10`).
 
 Non-numeric telemetry (e.g. `power_status = "offline"`) declares an `enum`
-mapping raw integer wire values to labels, since the wire codec itself is
-scalar-only:
+mapping raw integer wire values to labels, since the wire codec itself only
+knows numbers (an array with an `enum` maps every element):
 
 ```toml
 [nodes.payload.telemetry.power_status]
