@@ -222,6 +222,32 @@ transmitted; it costs nothing, and a signal that *is* mapped but never emitted
 fails its assertion with "was never observed on the bus" rather than silently
 passing.
 
+### Answering requests
+
+A module can also *answer*: a setup declares a request of the node
+(`[nodes.<node>.requests.<name>]`: a port, an optional payload and the packet the reply
+is laid out like) and the runner calls the module's `answer_request` when one arrives:
+
+```python
+from cubesat_testbed.modules import ModuleRequest
+
+
+def answer_request(self, request: ModuleRequest, *, now: VirtualTime) -> dict[str, object] | None:
+    if request.payload == b"\x02":  # "give me the detailed one"
+        return {**self.telemetry(now=now), "mode": "diagnostic"}
+    return self.telemetry(now=now)
+```
+
+Return one value per field of the reply packet, keyed by field name as in `telemetry()`,
+or `None` to stay silent (the requester then times out). `request` carries the request's
+name, its payload, and who asked (`source`, `source_address`). The hook is optional: a
+module without it answers every request with its current `telemetry()`, which is what a
+"poll my housekeeping" request needs. The reply is encoded through the reply packet's
+layout and sent on the bus, addressed back to the requester. libcsp's standard services
+(ping, uptime, memfree, buf_free) need no module code at all: they are switched on with
+`[nodes.<node>.services]`. See the `requests` example and
+[`docs/v1-scope.md`](v1-scope.md#requests-and-replies).
+
 ## 5. The factory and the registry
 
 A factory turns one configured node into one module instance. It receives a
@@ -371,6 +397,7 @@ Before you call a module done:
 - [ ] Unknown commands aimed at your node raise; commands aimed elsewhere
       return `False`.
 - [ ] A scenario asserts your telemetry *off the bus* and passes.
+- [ ] If the node answers requests, a `request` step reads the reply off the bus.
 - [ ] No threshold logic in the module — that belongs to OBC Peer rules.
 
 `tests/test_modules_thermal.py` is a model for the unit tests, and

@@ -9,6 +9,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Requests and replies. A simulated node answers libcsp's standard services when
+  `[nodes.<node>.services]` switches them on (`ping` echoes, `uptime`, `memfree` and `buf_free`
+  reply with a 4-byte big-endian number, as `csp_service_handler` does), and requests of its own
+  declared under `[nodes.<node>.requests.<name>]` (a port, an optional payload, and the packet the
+  reply is laid out like). A module answers through an optional `answer_request` hook, or from its
+  `telemetry()` without one. Replies go back as libcsp's `csp_sendto_reply` sends them; a CRC32
+  request gets a CRC32 reply, and an HMAC/XTEA/RDP request is a reported drop
+  (`reason=unanswerable`). A packet with `periodic = false` is only a reply layout, never
+  beaconed. See [`docs/v1-scope.md`](docs/v1-scope.md#requests-and-replies).
+- A `request` scenario step: send a service or a configured request from a simulated node to any
+  node, real or simulated, wait up to `timeout` for the reply on the bus and check decoded reply
+  fields with `expect`. Each result counts like an assertion (text, `--json`, JUnit, HTML report
+  linked to the reply frame), and `--trace` names request and reply frames.
+- A packaged `requests` example, and `csp_ping` (libcsp's own `csp_ping()`) plus a `services`
+  mode of `csp_rx` (libcsp's `csp_service_handler`) as repository-built helpers. Twelve more
+  `libcsp`-marked interop cases: a real libcsp node pings a simulated node and gets the echo, and
+  a scenario pings a real libcsp node and reads its reply, over CAN, KISS and ZeroMQ, CSP v1 and
+  v2.
 - Telemetry packets carrying several signals. `[nodes.<node>.packets.<name>]` declares the
   addressing once (ports, `to`, priority, flags) and each `.fields.<field>` one signal's place in
   the payload, so a housekeeping struct is sent as one CSP packet and decoded field by field, the

@@ -17,12 +17,17 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 
 from cubesat_testbed.clock import Clock, VirtualClock
 from cubesat_testbed.config import (
+    CSP_EPHEMERAL_PORT_MIN,
+    CSP_SERVICE_PORTS,
+    SERVICE_REPLY_FIELDS,
     AssertionOperator,
     AssertStep,
     FaultType,
     InjectBusFaultStep,
     InjectFaultStep,
     InMemoryTransportConfig,
+    NodeMode,
+    RequestStep,
     ScenarioScript,
     SendCommandStep,
     TestbedConfig,
@@ -31,6 +36,7 @@ from cubesat_testbed.config import (
     load_scenario,
     load_testbed_config,
     rule_signal_problem,
+    split_signal_reference,
 )
 from cubesat_testbed.dut.manager import NodeParticipant, resolve_participants
 from cubesat_testbed.engine import (
@@ -51,6 +57,15 @@ from cubesat_testbed.modules import (
     module_registration,
     obc_peer_rule_from_config,
 )
+from cubesat_testbed.modules.base import ModuleRequest
+from cubesat_testbed.protocol.csp_services import (
+    CSP_SERVICE_FLAG_CRC32,
+    ServiceRequestError,
+    append_crc32,
+    decode_uint32_reply,
+    service_reply_data,
+    strip_crc32,
+)
 from cubesat_testbed.protocol.csp_v2 import (
     CSP_V2_DEFAULT_MAX_PACKET_BYTES,
     CspFields,
@@ -63,6 +78,7 @@ from cubesat_testbed.report.recorder import RunRecorder
 from cubesat_testbed.scenario.assertions import (
     AssertionResult,
     TelemetryAssertion,
+    compare_values,
     format_assertion_result,
 )
 from cubesat_testbed.transport import (
@@ -212,6 +228,59 @@ class _TelemetryRoute:
         }
 
 
+@runtime_checkable
+class _RequestAnsweringModule(Protocol):
+    def answer_request(
+        self, request: ModuleRequest, *, now: VirtualTime
+    ) -> Mapping[str, object] | None: ...
+
+
+_SERVICE_NAMES_BY_PORT = {port: name for name, port in CSP_SERVICE_PORTS.items()}
+
+_UPTIME_DIVISOR_US = 1_000_000
+
+
+@dataclass(frozen=True, slots=True)
+class _ServiceEndpoint:
+    """The standard services one simulated node answers (``[nodes.<node>.services]``)."""
+
+    node_name: str
+    address: int
+    services_by_port: dict[int, str]
+    values: dict[str, int]
+    """``memfree``/``buf_free``: the number the reply reports."""
+
+
+@dataclass(frozen=True, slots=True)
+class _RequestRoute:
+    """One configured request of a node, and the layout of its reply."""
+
+    node_name: str
+    request: str
+    address: int
+    port: int
+    payload_hex: bytes
+    reply_label: str
+    field_names: tuple[str, ...]
+    codec: TelemetryPacketCodec
+    simulated: bool
+
+    @property
+    def name(self) -> str:
+        return f"{self.node_name}.requests.{self.request}"
+
+
+@dataclass(slots=True)
+class _PendingReply:
+    """A scenario request waiting for its reply: the first matching packet is kept."""
+
+    sent_at: VirtualTime
+    payload: bytes | None = None
+    flags: int = 0
+    received_at: VirtualTime | None = None
+    envelope: TransportEnvelope | None = None
+
+
 @dataclass(slots=True)
 class ScenarioRuntime:
     """Runtime objects required to execute a scenario.
@@ -237,6 +306,9 @@ class ScenarioRuntime:
     telemetry_routes_by_node: dict[str, tuple[_TelemetryRoute, ...]]
     telemetry_order: tuple[str, ...]
     tick_order: tuple[str, ...]
+    service_endpoints: dict[int, _ServiceEndpoint] = field(default_factory=dict)
+    """Simulated nodes answering libcsp services, by CSP address."""
+    request_routes: tuple[_RequestRoute, ...] = ()
     clock: Clock = field(default_factory=VirtualClock)
     trace: TextIO | None = None
     """Stream ``DROP`` lines are written to when ``--trace`` is on."""
@@ -387,6 +459,8 @@ class ScenarioRunner:
         self._senders: dict[int, PacketSender] = {}
         self._dropped_packets: list[DroppedPacket] = []
         self._signal_evidence: dict[str, int | None] = {}
+        self._pending_replies: dict[tuple[int, int, int, int], _PendingReply] = {}
+        self._next_ephemeral_port: dict[int, int] = {}
         self.runtime.engine.add_handler(EventKind.TELEMETRY, self._record_telemetry)
         if runtime.bus_faults is not None:
             # A frame the bus held back is delivered in the instant it is released.
@@ -424,6 +498,8 @@ class ScenarioRunner:
                 self.send_command(step)
             elif isinstance(step, AssertStep):
                 self.assert_step(step, index=index)
+            elif isinstance(step, RequestStep):
+                self.request_step(step, index=index)
             else:
                 raise ScenarioRuntimeError(f"unsupported scenario step at index {index}: {step!r}")
 
@@ -603,6 +679,368 @@ class ScenarioRunner:
         )
         self._run_current_events()
         return result
+
+    def request_step(self, step: RequestStep, *, index: int) -> tuple[AssertionResult, ...]:
+        """Send a request from a simulated node and judge the reply read off the bus.
+
+        The request leaves from an ephemeral source port, as libcsp's ``csp_connect`` gives
+        one, and the reply is the first packet back from the target to the requester with
+        the ports swapped. The step's first result says whether a reply came in time (and,
+        for ``ping``, whether it echoed the request); each ``expect`` entry is one more
+        result on a decoded reply field. Nothing reads the target module's state.
+        """
+
+        setup = self.runtime.setup
+        source = setup.nodes[step.source]
+        target = setup.nodes[step.target]
+        if step.service is not None:
+            port = CSP_SERVICE_PORTS[step.service]
+            default_payload = bytes(range(4)) if step.service == "ping" else b""
+            what = f"{step.target}.services.{step.service}"
+            route = None
+        else:
+            assert step.request is not None  # the model requires one of the two
+            request = target.requests[step.request]
+            port = request.port
+            default_payload = request.payload_hex
+            what = f"{step.target}.requests.{step.request}"
+            route = next(
+                candidate
+                for candidate in self.runtime.request_routes
+                if candidate.node_name == step.target and candidate.request == step.request
+            )
+        payload = default_payload if step.payload_hex is None else step.payload_hex
+        ephemeral = self._allocate_ephemeral_port(source.address, target.address)
+        key = (target.address, source.address, port, ephemeral)
+        pending = _PendingReply(sent_at=self.runtime.engine.now)
+        self._pending_replies[key] = pending
+        try:
+            self._send_packet(
+                CspFields(
+                    priority=2,
+                    source=source.address,
+                    destination=target.address,
+                    destination_port=port,
+                    source_port=ephemeral,
+                    flags=0,
+                ),
+                payload,
+            )
+            self._run_current_events()
+            deadline = pending.sent_at + step.timeout
+            while pending.payload is None and self.runtime.engine.now < deadline:
+                next_event_time = self.runtime.engine.next_event_time
+                next_stop = deadline if next_event_time is None else min(next_event_time, deadline)
+                self.wait(next_stop - self.runtime.engine.now)
+        finally:
+            del self._pending_replies[key]
+
+        results = self._judge_reply(step, index, what, payload, pending, route)
+        evidence = (
+            None
+            if pending.envelope is None or self.runtime.recorder is None
+            else self.runtime.recorder.rx_frame_id(pending.envelope)
+        )
+        for result in results:
+            self._assertion_results.append(result)
+            if self.runtime.recorder is not None:
+                self.runtime.recorder.assertion(result, evidence)
+            print(format_assertion_result(result), file=self._output)
+            self.runtime.engine.schedule_assertion(
+                result.name, passed=result.passed, detail=result.detail
+            )
+        self._run_current_events()
+        return results
+
+    def _judge_reply(
+        self,
+        step: RequestStep,
+        index: int,
+        what: str,
+        payload: bytes,
+        pending: _PendingReply,
+        route: _RequestRoute | None,
+    ) -> tuple[AssertionResult, ...]:
+        name = step.name or f"request_{index}"
+        now = self.runtime.engine.now
+
+        def result(
+            result_name: str,
+            signal: str,
+            expected: object,
+            actual: object,
+            passed: bool,
+            detail: str,
+        ) -> AssertionResult:
+            return AssertionResult(
+                name=result_name,
+                signal=signal,
+                operator=AssertionOperator.EQ,
+                expected=expected,
+                actual=actual,
+                passed=passed,
+                evaluated_at=now,
+                detail=detail,
+            )
+
+        expected_reply = payload.hex() if step.service == "ping" else "reply"
+        fields: dict[str, object] | None = None
+        if pending.payload is None:
+            main = result(
+                name,
+                what,
+                expected_reply,
+                None,
+                False,
+                f"{what}: no reply from {step.target} within {_seconds(step.timeout)}",
+            )
+        else:
+            assert pending.received_at is not None
+            after = _seconds(pending.received_at - pending.sent_at)
+            try:
+                data = strip_crc32(pending.payload, pending.flags)
+                if step.service == "ping":
+                    passed = data == payload
+                    detail = (
+                        f"{what}: {step.target} echoed {data.hex() or '(empty)'} after {after}"
+                        if passed
+                        else f"{what}: {step.target} answered {data.hex() or '(empty)'} after "
+                        f"{after}, expected the echo {payload.hex() or '(empty)'}"
+                    )
+                    main = result(name, what, expected_reply, data.hex(), passed, detail)
+                elif step.service is not None:
+                    value = decode_uint32_reply(data)
+                    fields = {SERVICE_REPLY_FIELDS[step.service]: value}
+                    main = result(
+                        name,
+                        what,
+                        "reply",
+                        value,
+                        True,
+                        f"{what}: {step.target} answered {SERVICE_REPLY_FIELDS[step.service]}="
+                        f"{value} after {after}",
+                    )
+                else:
+                    assert route is not None
+                    decoded = route.codec.decode(data)
+                    fields = dict(decoded)
+                    shown = " ".join(f"{key}={value!r}" for key, value in decoded.items())
+                    main = result(
+                        name,
+                        what,
+                        "reply",
+                        data.hex(),
+                        True,
+                        f"{what}: {step.target} answered after {after}: {shown}",
+                    )
+            except (ServiceRequestError, TelemetryCodecError) as exc:
+                main = result(
+                    name,
+                    what,
+                    expected_reply,
+                    pending.payload.hex(),
+                    False,
+                    f"{what}: {step.target} answered {pending.payload.hex()}, which does not "
+                    f"decode: {exc}",
+                )
+
+        results = [main]
+        for expectation in step.expect:
+            signal = f"{what}.{expectation.field}"
+            expectation_name = f"{name}.{expectation.field}"
+            if fields is None:
+                results.append(
+                    result(
+                        expectation_name,
+                        signal,
+                        expectation.value,
+                        None,
+                        False,
+                        f"{signal} {expectation.op.value} {expectation.value!r}; no decoded reply",
+                    )
+                )
+                continue
+            field_name, element = split_signal_reference(f"reply.{expectation.field}")
+            actual = fields[field_name.removeprefix("reply.")]
+            if element is not None:
+                assert isinstance(actual, tuple)
+                actual = actual[element]
+            passed, detail = compare_values(
+                actual=actual, operator=expectation.op, expected=expectation.value, signal=signal
+            )
+            results.append(
+                AssertionResult(
+                    name=expectation_name,
+                    signal=signal,
+                    operator=AssertionOperator(expectation.op),
+                    expected=expectation.value,
+                    actual=actual,
+                    passed=passed,
+                    evaluated_at=now,
+                    detail=detail,
+                )
+            )
+        return tuple(results)
+
+    def _allocate_ephemeral_port(self, source: int, target: int) -> int:
+        """The next free source port of ``source``, cycling 17-63 like libcsp's connections."""
+
+        maximum = 63
+        span = maximum - CSP_EPHEMERAL_PORT_MIN + 1
+        start = self._next_ephemeral_port.get(source, CSP_EPHEMERAL_PORT_MIN)
+        for offset in range(span):
+            port = CSP_EPHEMERAL_PORT_MIN + (start - CSP_EPHEMERAL_PORT_MIN + offset) % span
+            if not any(key[1] == source and key[3] == port for key in self._pending_replies):
+                self._next_ephemeral_port[source] = (
+                    CSP_EPHEMERAL_PORT_MIN + (port - CSP_EPHEMERAL_PORT_MIN + 1) % span
+                )
+                return port
+        raise ScenarioRuntimeError(f"node at address {source} has no free source port left")
+
+    def _take_awaited_reply(self, packet: PacketView, envelope: TransportEnvelope) -> bool:
+        fields = packet.fields
+        pending = self._pending_replies.get(
+            (fields.source, fields.destination, fields.source_port, fields.destination_port)
+        )
+        if pending is None or pending.payload is not None:
+            return False
+        pending.payload = packet.payload
+        pending.flags = fields.flags
+        pending.received_at = self.runtime.engine.now
+        pending.envelope = envelope
+        return True
+
+    def _answer_request(self, packet: PacketView) -> bool:
+        """Answer a service or configured request addressed to a simulated node.
+
+        Returns whether the packet was such a request (answered, declined by the module or
+        dropped as unanswerable), so the caller does not route it further.
+        """
+
+        fields = packet.fields
+        endpoint = self.runtime.service_endpoints.get(fields.destination)
+        if endpoint is not None and fields.destination_port in endpoint.services_by_port:
+            service = endpoint.services_by_port[fields.destination_port]
+            try:
+                self._check_reply_flags(fields.flags)
+                data = service_reply_data(
+                    service,
+                    strip_crc32(packet.payload, fields.flags),
+                    uptime_s=self.runtime.engine.now // _UPTIME_DIVISOR_US,
+                    values=endpoint.values,
+                )
+            except ServiceRequestError as exc:
+                self._drop_request(packet, f"{endpoint.node_name}.services.{service}: {exc}")
+                return True
+            self._send_reply(fields, data)
+            return True
+
+        route = self._request_route_for(fields.destination, fields.destination_port, packet.payload)
+        if route is None or not route.simulated:
+            return False
+        module = self.runtime.module(route.node_name)
+        now = self.runtime.engine.now
+        try:
+            self._check_reply_flags(fields.flags)
+        except ServiceRequestError as exc:
+            self._drop_request(packet, f"{route.name}: {exc}")
+            return True
+        source_names = {node.address: name for name, node in self.runtime.setup.nodes.items()}
+        values: Mapping[str, object] | None
+        if isinstance(module, _RequestAnsweringModule):
+            values = module.answer_request(
+                ModuleRequest(
+                    request=route.request,
+                    payload=packet.payload,
+                    source=source_names.get(fields.source),
+                    source_address=fields.source,
+                ),
+                now=now,
+            )
+            if values is None:
+                return True  # the module chose not to answer; the requester times out
+        elif isinstance(module, _TelemetryReportingModule):
+            values = module.telemetry(now=now)
+        else:
+            raise ScenarioRuntimeError(
+                f"module {route.node_name!r} has neither answer_request nor telemetry, so it "
+                f"cannot answer {route.name}"
+            )
+        missing = [name for name in route.field_names if name not in values]
+        if missing:
+            raise ScenarioRuntimeError(
+                f"module {route.node_name!r} gave no value for "
+                f"{', '.join(repr(name) for name in missing)} in its reply to {route.name} "
+                f"({route.reply_label})"
+            )
+        data = route.codec.encode({name: values[name] for name in route.field_names})
+        self._send_reply(fields, data)
+        return True
+
+    def _request_route_for(self, address: int, port: int, payload: bytes) -> _RequestRoute | None:
+        candidates = [
+            route
+            for route in self.runtime.request_routes
+            if route.address == address and route.port == port
+        ]
+        exact = [route for route in candidates if route.payload_hex == payload]
+        if len(exact) == 1:
+            return exact[0]
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    @staticmethod
+    def _check_reply_flags(flags: int) -> None:
+        unsupported = flags & ~CSP_SERVICE_FLAG_CRC32
+        if unsupported:
+            raise ServiceRequestError(
+                f"request flags 0x{flags:02x} ask for HMAC/XTEA/RDP, which a simulated node "
+                "does not implement; only CRC32 is answered"
+            )
+
+    def _send_reply(self, request: PacketFields, data: bytes) -> None:
+        """Send ``data`` back to the requester, as ``csp_sendto_reply(..., CSP_O_SAME)``."""
+
+        self._send_packet(
+            CspFields(
+                priority=request.priority,
+                source=request.destination,
+                destination=request.source,
+                destination_port=request.source_port,
+                source_port=request.destination_port,
+                flags=request.flags,
+            ),
+            append_crc32(data, request.flags),
+        )
+
+    def _drop_request(self, packet: PacketView, detail: str) -> None:
+        self._append_drop(
+            DroppedPacket(
+                time=self.runtime.engine.now,
+                destination=packet.fields.destination,
+                sender=packet.fields.source,
+                reason="unanswerable",
+                detail=detail,
+            )
+        )
+
+    def _is_request_traffic(self, fields: PacketFields) -> bool:
+        """A request to, or a reply from, a node the testbed is not answering for.
+
+        Such packets are observed (``--trace`` names them), not warned about: a real OBC
+        pinging a real board, or the in-memory bus handing the testbed its own reply back.
+        """
+
+        if fields.destination_port in _SERVICE_NAMES_BY_PORT:
+            return True
+        if fields.source_port in _SERVICE_NAMES_BY_PORT:
+            return True
+        return any(
+            (route.address == fields.destination and route.port == fields.destination_port)
+            or (route.address == fields.source and route.port == fields.source_port)
+            for route in self.runtime.request_routes
+        )
 
     def _record_telemetry(self, event: SimulationEvent, _engine: DiscreteEventEngine) -> None:
         if not isinstance(event.payload, TelemetryPayload):
@@ -852,6 +1290,10 @@ class ScenarioRunner:
             self.runtime.trace.flush()
 
     def _route_packet(self, packet: PacketView, envelope: TransportEnvelope) -> None:
+        if self._take_awaited_reply(packet, envelope):
+            return
+        if self._answer_request(packet):
+            return
         command_route = self._command_route_for_packet(packet)
         if command_route is not None:
             self._deliver_command(command_route, packet, envelope)
@@ -863,6 +1305,8 @@ class ScenarioRunner:
             return
 
         fields = packet.fields
+        if self._is_request_traffic(fields):
+            return
         warnings.warn(
             "received CSP frame with no configured route, ignoring it: "
             f"src={fields.source} dst={fields.destination} "
@@ -1064,6 +1508,8 @@ def build_runtime(
     command_routes = _build_command_routes(setup)
     telemetry_routes = _build_telemetry_routes(setup)
     participants = resolve_participants(setup)
+    request_routes = _build_request_routes(setup)
+    service_endpoints = _build_service_endpoints(setup)
     transport = build_transport_adapter(
         setup.transport,
         endpoints=(node.address for node in setup.nodes.values()),
@@ -1094,7 +1540,9 @@ def build_runtime(
             transport,
             stream=trace,
             now=lambda: engine.now,
-            annotate=_build_frame_annotator(command_routes, telemetry_routes),
+            annotate=_build_frame_annotator(
+                command_routes, telemetry_routes, request_routes, setup
+            ),
             observer=None if recorder is None else recorder.observe_frame,
         )
         transport = tracing
@@ -1152,6 +1600,8 @@ def build_runtime(
         command_routes=command_routes,
         telemetry_routes=telemetry_routes,
         telemetry_routes_by_node=telemetry_routes_by_node,
+        service_endpoints=service_endpoints,
+        request_routes=request_routes,
         telemetry_order=telemetry_order,
         tick_order=tick_order,
         clock=VirtualClock() if clock is None else clock,
@@ -1306,6 +1756,8 @@ def build_obc_rules_from_file(path: str | Path) -> dict[str, tuple[ObcPeerRule, 
 def _build_frame_annotator(
     command_routes: tuple[_CommandRoute, ...],
     telemetry_routes: tuple[_TelemetryRoute, ...],
+    request_routes: tuple[_RequestRoute, ...] = (),
+    setup: TestbedConfig | None = None,
 ) -> FrameAnnotator:
     """Build the trace annotator that names the route a traced frame matches.
 
@@ -1338,7 +1790,13 @@ def _build_frame_annotator(
             return _telemetry_annotation(telemetry[0], packet.payload)
         if telemetry:
             return "telemetry ambiguous-route"
-        return "unrouted"
+        return _request_annotation(packet, request_routes, names) or "unrouted"
+
+    names = (
+        {}
+        if setup is None
+        else {node.address: node_name for node_name, node in setup.nodes.items()}
+    )
 
     return annotate
 
@@ -1381,6 +1839,44 @@ def _telemetry_annotation(route: _TelemetryRoute, payload: bytes) -> str:
         for signal, field_name in zip(route.signals, route.field_names, strict=True)
     )
     return f"telemetry {route.label} {fields}"
+
+
+def _request_annotation(
+    packet: PacketView, request_routes: tuple[_RequestRoute, ...], names: Mapping[int, str]
+) -> str | None:
+    """Name a request or reply frame: ``request ping to eps``, ``reply eps.requests.hk ...``."""
+
+    fields = packet.fields
+    for route in request_routes:
+        if route.address == fields.destination and route.port == fields.destination_port:
+            return f"request {route.name}"
+        if route.address == fields.source and route.port == fields.source_port:
+            try:
+                data = strip_crc32(packet.payload, fields.flags)
+                decoded = route.codec.decode(data)
+            except (ServiceRequestError, TelemetryCodecError) as exc:
+                return f"reply {route.name} undecodable={str(exc)!r}"
+            shown = " ".join(f"{key}={value!r}" for key, value in decoded.items())
+            return f"reply {route.name} {shown}"
+    service = _SERVICE_NAMES_BY_PORT.get(fields.destination_port)
+    if service is not None:
+        return f"request {service} to {names.get(fields.destination, fields.destination)}"
+    service = _SERVICE_NAMES_BY_PORT.get(fields.source_port)
+    if service is not None:
+        sender = names.get(fields.source, fields.source)
+        if service == "ping":
+            return f"reply ping from {sender}"
+        try:
+            value = decode_uint32_reply(strip_crc32(packet.payload, fields.flags))
+        except ServiceRequestError as exc:
+            return f"reply {service} from {sender} undecodable={str(exc)!r}"
+        return f"reply {service} from {sender} {SERVICE_REPLY_FIELDS[service]}={value}"
+    return None
+
+
+def _seconds(microseconds: int) -> str:
+    whole, fraction = divmod(microseconds, 1_000_000)
+    return f"{whole}.{fraction:06d} s"
 
 
 def _signal_samples(signal: str, value: object) -> list[tuple[str, object]]:
@@ -1445,7 +1941,7 @@ def _build_telemetry_routes(setup: TestbedConfig) -> tuple[_TelemetryRoute, ...]
             )
         except TelemetryCodecError as exc:
             raise ScenarioRuntimeError(f"telemetry packet {definition.label}: {exc}") from exc
-        addressing = definition.addressing
+        addressing = definition
         routes.append(
             _TelemetryRoute(
                 label=definition.label,
@@ -1465,6 +1961,54 @@ def _build_telemetry_routes(setup: TestbedConfig) -> tuple[_TelemetryRoute, ...]
             )
         )
     return tuple(routes)
+
+
+def _build_request_routes(setup: TestbedConfig) -> tuple[_RequestRoute, ...]:
+    routes: list[_RequestRoute] = []
+    for node_name, node in setup.nodes.items():
+        for request_name, request in node.requests.items():
+            packet = node.packets[request.reply]
+            label = f"{node_name}.packets.{request.reply}"
+            try:
+                codec = TelemetryPacketCodec.build(list(packet.fields.items()))
+            except TelemetryCodecError as exc:
+                raise ScenarioRuntimeError(f"reply packet {label}: {exc}") from exc
+            routes.append(
+                _RequestRoute(
+                    node_name=node_name,
+                    request=request_name,
+                    address=node.address,
+                    port=request.port,
+                    payload_hex=request.payload_hex,
+                    reply_label=label,
+                    field_names=tuple(packet.fields),
+                    codec=codec,
+                    simulated=node.mode is NodeMode.SIMULATED,
+                )
+            )
+    return tuple(routes)
+
+
+def _build_service_endpoints(setup: TestbedConfig) -> dict[int, _ServiceEndpoint]:
+    endpoints: dict[int, _ServiceEndpoint] = {}
+    for node_name, node in setup.nodes.items():
+        if node.services is None or node.mode is not NodeMode.SIMULATED:
+            continue
+        values = {
+            name: value
+            for name, value in (
+                ("memfree", node.services.memfree),
+                ("buf_free", node.services.buf_free),
+            )
+            if value is not None
+        }
+        endpoints[node.address] = _ServiceEndpoint(
+            node_name=node_name,
+            address=node.address,
+            services_by_port=node.services.enabled_ports(),
+            values=values,
+        )
+    return endpoints
 
 
 def _telemetry_plan_from_routes(

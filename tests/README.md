@@ -34,7 +34,10 @@ Coverage:
   thermal node;
 - fault injection tests for `state_override`, `signal_override`, and named fault
   flags;
-- scenario runner PASS/FAIL, dropped-packet and `--trace` result tests.
+- scenario runner PASS/FAIL, dropped-packet and `--trace` result tests;
+- requests and replies (`test_request_response.py`): libcsp services and configured requests on
+  simulated nodes, the `request` step against simulated nodes and a scripted real board, CRC32
+  and HMAC requests, and config and scenario validation.
 
 The ZeroMQ transport tests need the optional `pyzmq`, which the `dev` extra installs.
 The golden vectors themselves are regenerated and diffed in CI
@@ -55,9 +58,11 @@ it has been configured by the host.
 Tests marked `libcsp` (`test_libcsp_interop.py`) run a real libcsp node against the CLI instead of
 replaying recorded bytes, on every link (CAN, KISS over a pty pair, ZeroMQ through libcsp's own
 `zmqproxy`) and as CSP v1 and v2, in both directions: a libcsp node sends housekeeping that a
-scenario assertion reads, and a libcsp node listening on a port receives the telemetry a simulated
-EPS addresses to the OBC. They need the helpers the vector container builds (`csp_client`,
-`csp_rx`, `zmqproxy` in `tests/golden_vectors/bin`) and a virtual CAN bus, which the container
+scenario assertion reads, a libcsp node listening on a port receives the telemetry a simulated
+EPS addresses to the OBC, libcsp's own `csp_ping()` gets the echo from a simulated node, and a
+scenario's `request` steps ping a libcsp node (`csp_rx ... services`) and read its reply. They
+need the helpers the vector container builds (`csp_client`, `csp_rx`, `csp_ping`, `zmqproxy` in
+`tests/golden_vectors/bin`) and a virtual CAN bus, which the container
 creates in its own network namespace, so they run inside it, with the project's virtual
 environment from the checkout (the container has the same Python as `.python-version`):
 
@@ -73,7 +78,7 @@ docker compose exec -T libcsp-vectors sh -c '
 ```
 
 Without `CUBESAT_TESTBED_LIBCSP_BIN` they are skipped, as the CAN cases are without
-`CUBESAT_TESTBED_SOCKETCAN_INTERFACE`. Twelve cases take about eighty seconds, because the testbed
-runs paced against real time. A container started from an image older than a helper does not have
+`CUBESAT_TESTBED_SOCKETCAN_INTERFACE`. The twenty-four cases take about three minutes, because
+the testbed runs paced against real time. A container started from an image older than a helper does not have
 that helper; compile it with the `cc` line of the `Dockerfile` (the entrypoint also overwrites
 `bin/csp_client` with the image's copy on every start).

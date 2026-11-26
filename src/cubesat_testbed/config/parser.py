@@ -420,16 +420,135 @@ class TelemetryPacketField(TelemetryFieldLayout):
     """One field of a multi-field packet: ``[nodes.<node>.packets.<packet>.fields.<name>]``."""
 
 
-class TelemetryPacket(_TelemetryAddressing):
+class TelemetryPacket(BaseModel):
     """Several telemetry signals sent together as one CSP packet.
 
     ``[nodes.<node>.packets.<name>]`` holds the addressing, and each
     ``[nodes.<node>.packets.<name>.fields.<field>]`` one signal's place in the payload: the
     normal shape of a housekeeping packet. The sender encodes every field into one packet
     and the receiver decodes it field by field; fields must not overlap, gaps are zero.
+
+    ``periodic = false`` makes the packet a reply layout only: it is never beaconed, only
+    sent as the answer to a configured request (``[nodes.<node>.requests.<name>]``), so it
+    needs no ports (a reply goes back on the ports of the request it answers) and its
+    fields are not telemetry signals.
     """
 
+    model_config = _SCHEMA_MODEL_CONFIG
+
+    source_port: CspPort | None = None
+    destination_port: CspPort | None = None
+    to: str | None = None
+    priority: CspPriority = 2
+    flags: CspFlags = 0
+    periodic: bool = True
     fields: dict[str, TelemetryPacketField] = Field(min_length=1)
+
+    @field_validator("to")
+    @classmethod
+    def _validate_to(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_identifier("telemetry destination node", value)
+
+    @model_validator(mode="after")
+    def _validate_ports(self) -> Self:
+        if self.periodic and (self.source_port is None or self.destination_port is None):
+            raise ValueError(
+                "a periodic telemetry packet needs source_port and destination_port; set "
+                "periodic = false for a packet that is only sent as a reply"
+            )
+        if not self.periodic:
+            header = sorted(
+                {"source_port", "destination_port", "to", "priority", "flags"}
+                & self.model_fields_set
+            )
+            if header:
+                raise ValueError(
+                    f"a reply-only packet (periodic = false) takes no {', '.join(header)}: a "
+                    "reply goes back to the requester with the request's ports, priority and "
+                    "flags"
+                )
+        return self
+
+
+CSP_SERVICE_PORTS: dict[str, int] = {"ping": 1, "memfree": 3, "buf_free": 5, "uptime": 6}
+"""The libcsp service ports a simulated node can answer (``csp_service_handler``, v2.1)."""
+
+CSP_RESERVED_PORT_MAX = 6
+"""Ports 0-6 are libcsp's services (CMP, ping, ps, memfree, reboot, buf_free, uptime)."""
+
+CSP_EPHEMERAL_PORT_MIN = 17
+"""First source port the testbed gives a request: libcsp hands outgoing connections source ports
+above ``CSP_PORT_MAX_BIND`` (16 in the default build), up to 63."""
+
+
+class ServicesConfig(BaseModel):
+    """``[nodes.<node>.services]``: which libcsp standard services a simulated node answers.
+
+    The same answers ``csp_service_handler`` gives in libcsp ``v2.1``, all replying to the
+    requester on the request's own ports: ``ping`` echoes the request's payload, ``uptime``
+    returns the node's uptime in seconds (virtual time since the run started) as a 4-byte
+    big-endian unsigned integer, and ``memfree``/``buf_free`` return the configured number
+    the same way (a real board reports its free heap and free CSP buffers there).
+    """
+
+    model_config = _SCHEMA_MODEL_CONFIG
+
+    ping: bool = False
+    uptime: bool = False
+    memfree: Annotated[int, Field(ge=0, le=0xFFFFFFFF, strict=True)] | None = None
+    buf_free: Annotated[int, Field(ge=0, le=0xFFFFFFFF, strict=True)] | None = None
+
+    def enabled_ports(self) -> dict[int, str]:
+        """The service port of every enabled service, mapped to the service's name."""
+
+        enabled = {
+            "ping": self.ping,
+            "uptime": self.uptime,
+            "memfree": self.memfree is not None,
+            "buf_free": self.buf_free is not None,
+        }
+        return {CSP_SERVICE_PORTS[name]: name for name, on in enabled.items() if on}
+
+
+class RequestMapping(BaseModel):
+    """``[nodes.<node>.requests.<name>]``: a request the node answers, and with what.
+
+    A request arrives on destination ``port`` (with ``payload_hex`` when several requests
+    share a port, the way commands do). The answer is one packet laid out like ``reply``, a
+    packet of the same node, sent back to the requester on the request's ports. For a
+    simulated node the module's ``answer_request`` hook supplies the values, or its
+    ``telemetry()`` when it has no hook; for a real node this describes what the board
+    answers, so a scenario can send the request and check the reply.
+    """
+
+    model_config = _SCHEMA_MODEL_CONFIG
+
+    port: CspPort
+    payload_hex: bytes = b""
+    reply: str
+
+    @field_validator("payload_hex", mode="before")
+    @classmethod
+    def _coerce_payload_hex(cls, value: object) -> bytes:
+        return _coerce_hex_bytes(value)
+
+    @field_validator("reply")
+    @classmethod
+    def _validate_reply(cls, value: str) -> str:
+        return _validate_identifier("request reply packet", value)
+
+    @field_validator("port")
+    @classmethod
+    def _validate_port(cls, value: int) -> int:
+        if value <= CSP_RESERVED_PORT_MAX:
+            raise ValueError(
+                f"request port {value} is reserved for libcsp's services (0-"
+                f"{CSP_RESERVED_PORT_MAX}); use [nodes.<node>.services] for ping, uptime, "
+                "memfree and buf_free"
+            )
+        return value
 
 
 class ObcRuleCommandAction(BaseModel):
@@ -511,7 +630,11 @@ class TelemetryPacketDefinition:
 
     node_name: str
     label: str
-    addressing: _TelemetryAddressing
+    source_port: int
+    destination_port: int
+    to: str | None
+    priority: int
+    flags: int
     fields: tuple[tuple[str, str, TelemetryFieldLayout], ...]
 
     @property
@@ -548,6 +671,8 @@ class NodeConfig(BaseModel):
     commands: dict[str, CommandMapping] = Field(default_factory=dict)
     telemetry: dict[str, TelemetryMapping] = Field(default_factory=dict)
     packets: dict[str, TelemetryPacket] = Field(default_factory=dict)
+    services: ServicesConfig | None = None
+    requests: dict[str, RequestMapping] = Field(default_factory=dict)
     rules: dict[str, ObcRule] = Field(default_factory=dict)
     params: dict[str, object] = Field(default_factory=dict)
 
@@ -612,7 +737,9 @@ class NodeConfig(BaseModel):
             raise ValueError(f"invalid params for module_type {self.module_type!r}: {exc}") from exc
 
     def telemetry_packets(self, node_name: str) -> tuple[TelemetryPacketDefinition, ...]:
-        """Every telemetry packet this node sends, single-signal mappings first.
+        """Every telemetry packet this node beacons, single-signal mappings first.
+
+        Reply-only packets (``periodic = false``) are not telemetry and are left out.
 
         A ``telemetry`` mapping is a packet of its own holding one field; a ``packets``
         entry holds several. Both come out in the same shape, in setup order.
@@ -622,7 +749,11 @@ class NodeConfig(BaseModel):
             TelemetryPacketDefinition(
                 node_name=node_name,
                 label=f"{node_name}.{mapping_name}",
-                addressing=mapping,
+                source_port=mapping.source_port,
+                destination_port=mapping.destination_port,
+                to=mapping.to,
+                priority=mapping.priority,
+                flags=mapping.flags,
                 fields=((mapping_name, mapping.resolved_signal(node_name, mapping_name), mapping),),
             )
             for mapping_name, mapping in self.telemetry.items()
@@ -631,13 +762,21 @@ class NodeConfig(BaseModel):
             TelemetryPacketDefinition(
                 node_name=node_name,
                 label=f"{node_name}.packets.{packet_name}",
-                addressing=packet,
+                source_port=packet.source_port,
+                destination_port=packet.destination_port,
+                to=packet.to,
+                priority=packet.priority,
+                flags=packet.flags,
                 fields=tuple(
                     (field_name, field.resolved_signal(node_name, field_name), field)
                     for field_name, field in packet.fields.items()
                 ),
             )
             for packet_name, packet in self.packets.items()
+            # Validated: a periodic packet has both ports; a reply-only one is not telemetry.
+            if packet.periodic
+            and packet.source_port is not None
+            and packet.destination_port is not None
         )
         return tuple(definitions)
 
@@ -743,6 +882,7 @@ class TestbedConfig(BaseModel):
         self._validate_bus_faults_transport()
         self._validate_command_mappings()
         self._validate_telemetry_mappings()
+        self._validate_requests_and_services()
         return self
 
     def command_mappings(self) -> dict[tuple[str, str], CommandMapping]:
@@ -844,7 +984,7 @@ class TestbedConfig(BaseModel):
 
         seen: dict[tuple[int, int], list[tuple[str, str | None]]] = {}
         for definition in definitions:
-            addressing = definition.addressing
+            addressing = definition
             ports = (addressing.source_port, addressing.destination_port)
             for other_label, other_to in seen.get(ports, []):
                 if addressing.to is None or other_to is None or addressing.to == other_to:
@@ -947,7 +1087,7 @@ class TestbedConfig(BaseModel):
             definitions = node.telemetry_packets(node_name)
             self._validate_telemetry_routes_are_distinct(node_name, definitions)
             for definition in definitions:
-                to = definition.addressing.to
+                to = definition.to
                 if to is not None and to not in self.nodes:
                     raise ValueError(
                         f"telemetry mapping {definition.label} is addressed to unknown node {to!r}"
@@ -988,6 +1128,88 @@ class TestbedConfig(BaseModel):
                             f"{previous_owner} and {owner}"
                         )
         self._validate_rule_signals()
+
+    def _validate_requests_and_services(self) -> None:
+        """Check services, requests and reply-only packets, and the ports they reserve.
+
+        A node answers a request on its destination port and replies from it, so that port
+        must not also be where the node takes a command or sends telemetry from: a frame on
+        it would be two things at once.
+        """
+
+        # Imported lazily for the reason given in TelemetryFieldLayout._validate_wire_layout.
+        from cubesat_testbed.protocol.signal_codec import SignalCodecError, SignalLayout
+        from cubesat_testbed.protocol.telemetry_codec import (
+            TelemetryCodecError,
+            signal_field_for_mapping,
+        )
+
+        for node_name, node in self.nodes.items():
+            if node.services is not None and node.mode is not NodeMode.SIMULATED:
+                raise ValueError(
+                    f"[nodes.{node_name}.services] is only for simulated nodes; a real "
+                    f"{node.mode.value} node answers (or not) on its own"
+                )
+            for packet_name, packet in node.packets.items():
+                if packet.periodic:
+                    continue
+                for field_name in packet.fields:
+                    _validate_identifier("telemetry field name", field_name)
+                label = f"{node_name}.packets.{packet_name}"
+                try:
+                    layout = SignalLayout(
+                        tuple(
+                            signal_field_for_mapping(name, field)
+                            for name, field in packet.fields.items()
+                        )
+                    )
+                except (SignalCodecError, TelemetryCodecError) as exc:
+                    raise ValueError(f"telemetry packet {label}: {exc}") from exc
+                if layout.required_length > node.max_packet_bytes:
+                    raise ValueError(
+                        f"telemetry packet {label} needs a {layout.required_length}-byte "
+                        f"payload, over {node_name!r} max_packet_bytes={node.max_packet_bytes}"
+                    )
+
+            answered: dict[int, str] = {}
+            if node.services is not None:
+                answered.update(
+                    {
+                        port: f"service {name}"
+                        for port, name in node.services.enabled_ports().items()
+                    }
+                )
+            requests_by_wire: dict[tuple[int, bytes], str] = {}
+            for request_name, request in node.requests.items():
+                _validate_identifier("request name", request_name)
+                label = f"{node_name}.requests.{request_name}"
+                if request.reply not in node.packets:
+                    raise ValueError(
+                        f"request {label} replies with packet {request.reply!r}, which node "
+                        f"{node_name!r} does not define under [nodes.{node_name}.packets]"
+                    )
+                twin = requests_by_wire.setdefault((request.port, request.payload_hex), label)
+                if twin != label:
+                    raise ValueError(
+                        f"requests {twin} and {label} arrive on port {request.port} with the same "
+                        "payload_hex, so the node cannot tell them apart"
+                    )
+                answered.setdefault(request.port, f"request {request_name}")
+
+            for port, what in answered.items():
+                for source_name, source in self.nodes.items():
+                    for command_name, command in source.commands.items():
+                        if command.target == node_name and command.destination_port == port:
+                            raise ValueError(
+                                f"command {source_name}.{command_name} is sent to {node_name!r} "
+                                f"on port {port}, where {node_name!r} answers {what}"
+                            )
+                for definition in node.telemetry_packets(node_name):
+                    if definition.source_port == port:
+                        raise ValueError(
+                            f"telemetry {definition.label} is sent from port {port}, where "
+                            f"{node_name!r} answers {what}; a reply leaves from that port too"
+                        )
 
     def _validate_rule_signals(self) -> None:
         """An inline OBC rule compares a number, so it cannot name a whole array."""
@@ -1069,6 +1291,92 @@ class SendCommandStep(BaseModel):
         return _validate_identifier("scenario command node", value)
 
 
+class ReplyExpectation(BaseModel):
+    """One check on a decoded reply field: ``{field: battery_voltage_v, op: ">", value: 7}``."""
+
+    model_config = _SCHEMA_MODEL_CONFIG
+
+    field: str
+    op: AssertionOperator
+    value: object
+
+    @field_validator("field")
+    @classmethod
+    def _validate_field(cls, value: str) -> str:
+        match = _SIGNAL_REF_RE.fullmatch(f"reply.{value}")
+        if match is None:
+            raise ValueError(
+                "expect field must be a reply field name, or 'name[i]' for an array element"
+            )
+        return value
+
+
+SERVICE_REPLY_FIELDS: dict[str, str] = {
+    "uptime": "uptime_s",
+    "memfree": "memfree_bytes",
+    "buf_free": "buf_free",
+}
+"""The one field each value-returning service's reply decodes to, for ``expect``."""
+
+
+class RequestStep(BaseModel):
+    """Scenario step that sends a request and checks the reply that comes back on the bus.
+
+    ``service`` sends one of libcsp's standard requests (``ping``, ``uptime``, ``memfree``,
+    ``buf_free``) to any node; ``request`` sends one of the target's
+    ``[nodes.<target>.requests.<name>]``. The step passes when a reply arrives within
+    ``timeout`` (and, for ``ping``, echoes the request's bytes); each ``expect`` entry is
+    then checked against a decoded reply field and reported as its own result.
+    """
+
+    model_config = _SCHEMA_MODEL_CONFIG
+
+    action: Literal["request"]
+    source: str
+    target: str
+    service: Literal["ping", "uptime", "memfree", "buf_free"] | None = None
+    request: str | None = None
+    payload_hex: bytes | None = None
+    timeout: VirtualDuration = 1_000_000
+    expect: tuple[ReplyExpectation, ...] = ()
+    name: str | None = None
+
+    @field_validator("source", "target")
+    @classmethod
+    def _validate_node(cls, value: str) -> str:
+        return _validate_identifier("request node", value)
+
+    @field_validator("request", "name")
+    @classmethod
+    def _validate_optional_identifier(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_identifier("request name", value)
+
+    @field_validator("payload_hex", mode="before")
+    @classmethod
+    def _coerce_payload_hex(cls, value: object) -> bytes | None:
+        if value is None:
+            return None
+        return _coerce_hex_bytes(value)
+
+    @model_validator(mode="after")
+    def _validate_kind(self) -> Self:
+        if (self.service is None) == (self.request is None):
+            raise ValueError("a request step names exactly one of service or request")
+        if self.service == "ping" and self.expect:
+            raise ValueError("a ping reply has no fields to expect; the echo itself is checked")
+        if self.service in SERVICE_REPLY_FIELDS:
+            allowed = SERVICE_REPLY_FIELDS[self.service]
+            for expectation in self.expect:
+                if expectation.field != allowed:
+                    raise ValueError(
+                        f"the {self.service} reply has one field, {allowed!r}, not "
+                        f"{expectation.field!r}"
+                    )
+        return self
+
+
 class AssertStep(BaseModel):
     """Scenario step that declares a telemetry assertion."""
 
@@ -1095,7 +1403,7 @@ class AssertStep(BaseModel):
 
 
 ScenarioStep: TypeAlias = Annotated[
-    WaitStep | InjectFaultStep | InjectBusFaultStep | SendCommandStep | AssertStep,
+    WaitStep | InjectFaultStep | InjectBusFaultStep | SendCommandStep | AssertStep | RequestStep,
     Field(discriminator="action"),
 ]
 
@@ -1227,9 +1535,47 @@ def validate_scenario_references(scenario: ScenarioScript, setup: TestbedConfig)
             problem = signal_reference_problem(step.signal, telemetry_signals)
             if problem is not None:
                 errors.append(f"{prefix}: assertion {problem}")
+        elif isinstance(step, RequestStep):
+            _validate_request_reference(step, setup, prefix, errors)
 
     if errors:
         raise ScenarioReferenceError("; ".join(errors))
+
+
+def _validate_request_reference(
+    step: RequestStep, setup: TestbedConfig, prefix: str, errors: list[str]
+) -> None:
+    for role, node_name in (("source", step.source), ("target", step.target)):
+        if node_name not in setup.nodes:
+            errors.append(f"{prefix}: request {role} references unknown node {node_name!r}")
+            return
+    if setup.nodes[step.source].mode is not NodeMode.SIMULATED:
+        errors.append(
+            f"{prefix}: request source {step.source!r} must be a simulated node; the testbed "
+            "only sends packets on behalf of the nodes it simulates"
+        )
+    if step.source == step.target:
+        errors.append(f"{prefix}: request source and target are both {step.source!r}")
+    if step.request is None:
+        return
+    target = setup.nodes[step.target]
+    request = target.requests.get(step.request)
+    if request is None:
+        errors.append(
+            f"{prefix}: node {step.target!r} has no request {step.request!r} "
+            f"(see [nodes.{step.target}.requests])"
+        )
+        return
+    reply = target.packets[request.reply]
+    # Field names are not paths; prefix them so the signal-reference rules apply unchanged.
+    counts = {f"reply.{name}": field.count for name, field in reply.fields.items()}
+    for expectation in step.expect:
+        problem = signal_reference_problem(f"reply.{expectation.field}", counts)
+        if problem is not None:
+            errors.append(
+                f"{prefix}: expect on reply {step.target}.packets.{request.reply}: "
+                + problem.replace("signal", "field", 1).replace("reply.", "")
+            )
 
 
 def _validate_fault_reference(
@@ -1487,6 +1833,9 @@ def _read_text(path: str | Path) -> str:
 
 
 __all__ = [
+    "CSP_EPHEMERAL_PORT_MIN",
+    "CSP_SERVICE_PORTS",
+    "SERVICE_REPLY_FIELDS",
     "AssertStep",
     "AssertionOperator",
     "BusFaultRule",
@@ -1504,11 +1853,15 @@ __all__ = [
     "ObcRuleAction",
     "ObcRuleCommandAction",
     "ObcRuleFaultAction",
+    "ReplyExpectation",
+    "RequestMapping",
+    "RequestStep",
     "ScenarioParseError",
     "ScenarioReferenceError",
     "ScenarioScript",
     "ScenarioStep",
     "SendCommandStep",
+    "ServicesConfig",
     "SocketCanTransportConfig",
     "TelemetryFieldLayout",
     "TelemetryMapping",

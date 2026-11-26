@@ -111,6 +111,10 @@ EXAMPLES: tuple[Example, ...] = (
         summary="one EPS housekeeping packet with seven fields, an array and bit fields",
     ),
     Example(
+        name="requests",
+        summary="an EPS that answers ping, uptime and a housekeeping request; a scenario asking",
+    ),
+    Example(
         name="module-params",
         summary="retuning a built-in module through [nodes.<node>.params]",
     ),

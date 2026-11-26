@@ -1,14 +1,17 @@
 """A real libcsp node and the testbed, on every link and in both CSP versions.
 
 Everything else in the suite checks the testbed against *recorded* libcsp bytes. These tests run
-the real thing: the repository-built ``csp_client`` (a libcsp node that sends) and ``csp_rx`` (a
-libcsp node that listens, with libcsp's own destination filter), against the CLI, over a real
+the real thing: the repository-built ``csp_client`` (a libcsp node that sends), ``csp_rx`` (a
+libcsp node that listens, with libcsp's own destination filter, or answers libcsp's services) and
+``csp_ping`` (libcsp's own ``csp_ping()``), against the CLI, over a real
 (virtual) CAN bus, a KISS serial line and a ZeroMQ hub, as CSP v1 and as CSP v2:
 
 - *libcsp to testbed*: a real node 2 sends housekeeping to the OBC (node 1) and a scenario
   assertion reads it;
 - *testbed to libcsp*: a simulated EPS addresses its telemetry to the OBC with ``to``, and a real
-  libcsp node 1 listening on a port receives it.
+  libcsp node 1 listening on a port receives it;
+- *requests*: a real node 1 pings a simulated EPS with ``csp_ping()`` and gets the echo, and a
+  scenario's ``request`` steps ping a real node 2 and read its ``buf_free`` reply.
 
 They need the helpers the vector container builds, so they are skipped unless
 ``CUBESAT_TESTBED_LIBCSP_BIN`` names the directory holding ``csp_client`` and ``csp_rx``
@@ -311,3 +314,113 @@ def test_a_real_libcsp_node_receives_the_testbeds_telemetry(
         line.startswith(f"RX src=2 dst=1 dport={TELEMETRY_PORT} sport={TELEMETRY_PORT} len=4")
         for line in packets
     )
+
+
+# --- requests and replies (backlog item 18) ----------------------------------------------------
+
+PING_SETUP = """
+{version_line}
+[transport]
+{transport}
+
+[nodes.obc]
+mode = "software"
+address = 1
+
+[nodes.eps]
+mode = "simulated"
+module_type = "generic_eps"
+address = 2
+
+[nodes.eps.services]
+ping = true
+"""
+
+PING_SCENARIO = """
+name: a libcsp node pings a simulated EPS
+steps:
+  - action: wait
+    virtual_time: 6s
+"""
+
+REQUEST_SETUP = """
+{version_line}
+[transport]
+{transport}
+
+[nodes.obc]
+mode = "simulated"
+module_type = "obc_peer"
+address = 1
+
+[nodes.eps]
+mode = "software"
+address = 2
+"""
+
+REQUEST_SCENARIO = """
+name: the testbed pings a libcsp node
+steps:
+  - {action: wait, virtual_time: 2s}
+  - {action: request, source: obc, target: eps, service: ping, timeout: 3s}
+  - action: request
+    source: obc
+    target: eps
+    service: buf_free
+    timeout: 3s
+    expect: [{field: buf_free, op: ">", value: 0}]
+"""
+
+
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("link_name", list(LINKS))
+def test_a_real_libcsp_node_pings_a_simulated_node(
+    tmp_path: Path, link_name: str, version: int
+) -> None:
+    pinger = _helper("csp_ping")
+    with LINKS[link_name]() as link:
+        setup = PING_SETUP.format(version_line=_version_line(version), transport=link.transport)
+        result: dict[str, str] = {}
+
+        def _libcsp_node() -> None:
+            time.sleep(2.5)  # the testbed is connected and paced by then
+            completed = subprocess.run(
+                [str(pinger), link.receiver_spec, "1", str(version), "2", "4", "1000", "3"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            result["output"] = completed.stdout
+
+        thread = threading.Thread(target=_libcsp_node, daemon=True)
+        thread.start()
+        code = _run_cli(tmp_path, setup, PING_SCENARIO)
+        thread.join(timeout=15)
+
+    pings = [line for line in result.get("output", "").splitlines() if line.startswith("PING")]
+    assert code == 0
+    assert len(pings) == 3 and all("time=" in line for line in pings), pings
+
+
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("link_name", list(LINKS))
+def test_a_scenario_requests_from_a_real_libcsp_node(
+    tmp_path: Path, link_name: str, version: int
+) -> None:
+    receiver = _helper("csp_rx")
+    with LINKS[link_name]() as link:
+        setup = REQUEST_SETUP.format(version_line=_version_line(version), transport=link.transport)
+        node = subprocess.Popen(
+            [str(receiver), link.receiver_spec, "2", str(version), "services", "12"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        try:
+            time.sleep(1.5)
+            code = _run_cli(tmp_path, setup, REQUEST_SCENARIO)
+        finally:
+            node.kill()
+            output, _ = node.communicate(timeout=10)
+
+    assert code == 0, f"the libcsp node did not answer; it saw: {output!r}"
