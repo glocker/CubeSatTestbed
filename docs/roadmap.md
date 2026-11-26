@@ -114,6 +114,10 @@ verified in CI before any codec or adapter code.
        bit fields (most significant bit first) or fixed-length arrays, and `signal[i]` names
        one element in assertions and OBC rules. Checked against a QUBE beacon decoded by
        `satnogs-decoders` and against libcsp's own CSP headers.
+8. [x] **Requests and replies.** A simulated node answers libcsp's ping, uptime, memfree and
+       buf_free and requests of its own (a module hook, or its telemetry), and a `request`
+       scenario step sends one to any node and checks the reply read off the bus. Checked
+       against real libcsp: `csp_ping()` gets the echo, and a libcsp node answers the testbed.
 
 ## Next
 

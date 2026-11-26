@@ -649,6 +649,77 @@ type = "uint"
 1 = "online"
 ```
 
+## Requests and replies
+
+A simulated node can answer requests, and a scenario can send them, so the testbed plays
+both sides of a request/response conversation (a ping, a housekeeping poll), not only
+beacons. OBC Peer rules are unchanged: they stay stateless and never wait for an answer.
+
+**libcsp's standard services.** `[nodes.<node>.services]` makes a simulated node answer
+what `csp_service_handler` answers in libcsp `v2.1`:
+
+```toml
+[nodes.eps.services]
+ping = true        # port 1: echo the request's payload
+uptime = true      # port 6: seconds since the run started, uint32 big-endian
+memfree = 131072   # port 3: this number, uint32 big-endian (a board reports its free heap)
+buf_free = 10      # port 5: this number, uint32 big-endian (free CSP buffers)
+```
+
+Services are opt-in on simulated nodes and refused on real ones (a real libcsp node answers
+by itself). `cmp`, `ps` and `reboot` are not modelled.
+
+**A node's own requests.** `[nodes.<node>.requests.<name>]` names a request the node
+answers: it arrives on destination `port` (7-63; 0-6 are libcsp's services), matched by
+`payload_hex` when several share a port, and is answered with one packet laid out like
+`reply`, a packet of the same node. A packet with `periodic = false` is only ever a reply:
+it is not beaconed, takes no ports, `to`, priority or flags, and its fields are not
+telemetry signals. For a simulated node the module's `answer_request` hook supplies the
+values (or declines by returning `None`); a module without the hook answers from its
+current `telemetry()`. For a real node the entry describes what the board answers, so a
+scenario can ask it.
+
+**The reply** goes back as `csp_sendto_reply(..., CSP_O_SAME)` sends it: to the requester,
+destination port = the request's source port, source port = the request's destination port,
+with the request's priority and flags. A request with the CRC32 flag is answered with a
+fresh CRC32 over the reply's payload (libcsp `v2.1` accepts the payload-only form); a request
+asking for HMAC, XTEA or RDP is not answered and is reported as a dropped packet
+(`reason=unanswerable`), never ignored silently. The setup is refused when a request or
+service port is also where the node takes a command or sends telemetry from.
+
+**The `request` scenario step** sends from a simulated `source` to any `target`, from an
+ephemeral source port (17-63, cycling, as libcsp's outgoing connections do), and waits up
+to `timeout` (default 1 s) for the first packet back from the target with the ports
+swapped:
+
+```yaml
+- action: request
+  source: obc
+  target: eps
+  service: ping            # or uptime / memfree / buf_free, or `request: get_housekeeping`
+  payload_hex: "00010203"  # optional; ping defaults to 00 01 02 03, a request to its payload_hex
+  timeout: 500ms
+  expect:                  # optional: checks on decoded reply fields
+    - {field: "cell_voltages_v[1]", op: ">", value: 3.5}
+```
+
+It reports one result for the reply itself (FAIL: "no reply from eps within 0.500000 s";
+for `ping` also when the echo differs) and one per `expect` entry (`uptime_s`,
+`memfree_bytes` and `buf_free` are the fields of the value services' replies). They count
+in the summary, `--json`, JUnit and the HTML report, where each links to the reply frame.
+`--trace` names every request and reply frame (`request ping to eps`, `reply uptime from eps
+uptime_s=3`, `reply eps.requests.get_housekeeping battery_percent=...`). As with telemetry,
+a reply is only ever judged from the bytes that crossed the bus.
+
+On a real-time run (`--realtime`, a real peer) the step ends at the next virtual instant
+after the reply arrived, and the reply is stamped like any frame from a real peer (see
+*Timestamps of frames from a real peer*), so "after 0.000000 s" there means "before the
+next physical step", not a measured round trip.
+
+Checked against real libcsp in `tests/test_libcsp_interop.py` (CAN, KISS, ZeroMQ, CSP v1 and
+v2): libcsp's own `csp_ping()` gets a correct echo from a simulated node, and a scenario
+pings a libcsp node and reads its `buf_free` reply.
+
 ## Runtime model
 
 v1 is deterministic by default: a central discrete-event simulation loop,

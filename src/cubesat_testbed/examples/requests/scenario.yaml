@@ -1,0 +1,41 @@
+name: "EPS Requests"
+description: "Ping the EPS, ask its uptime and poll its housekeeping; a dead cell shows in the reply"
+
+steps:
+  - action: "wait"
+    virtual_time: "3s"
+
+  # libcsp's ping: the step passes when the EPS echoes the bytes it was sent.
+  - action: "request"
+    source: "obc"
+    target: "eps"
+    service: "ping"
+
+  - action: "request"
+    source: "obc"
+    target: "eps"
+    service: "uptime"
+    expect:
+      - {field: "uptime_s", op: "==", value: 3}
+
+  # The EPS's own request; each expect entry checks one field of the decoded reply.
+  - action: "request"
+    source: "obc"
+    target: "eps"
+    request: "get_housekeeping"
+    timeout: "500ms"
+    expect:
+      - {field: "power_mode", op: "==", value: "nominal"}
+      - {field: "cell_voltages_v[1]", op: ">", value: 3.5}
+
+  - action: "inject_fault"
+    type: "named_fault"
+    target: "eps.battery_cell_dead"
+
+  - action: "request"
+    source: "obc"
+    target: "eps"
+    request: "get_housekeeping"
+    timeout: "500ms"
+    expect:
+      - {field: "cell_voltages_v[1]", op: "<", value: 3.0}

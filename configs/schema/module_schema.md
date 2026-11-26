@@ -38,7 +38,11 @@ Invalid combinations fail during Pydantic validation. Examples:
   node must not share source and destination ports (unless `to` names
   different nodes), since a receiver could not tell them apart;
 - an index (`signal[i]`) in an assertion or a rule must name an element of an
-  array field, and a rule must not name a whole array.
+  array field, and a rule must not name a whole array;
+- `services` is only valid on simulated nodes; a request's `reply` must name a
+  packet of the same node, two requests must not share both port and payload,
+  and a request or service port must not also be a port the node takes a
+  command on or sends telemetry from.
 - `rules` is only valid for `module_type = "obc_peer"` nodes.
 - `params` is only valid on `simulated` nodes and must match the target
   module's own parameter names/types/ranges.
@@ -86,6 +90,25 @@ offset = 12
 bit_offset = 0        # the byte's most significant bit
 bit_length = 2
 type = "uint"
+```
+
+A packet with `periodic = false` is never beaconed: it is only the layout of a reply
+(below), takes no ports, `to`, priority or flags, and its fields are not telemetry signals.
+
+A simulated node can answer libcsp's standard services, and any node can have requests of
+its own; see [`docs/v1-scope.md`](../../docs/v1-scope.md#requests-and-replies):
+
+```toml
+[nodes.eps.services]          # simulated nodes only
+ping = true                   # port 1, echo
+uptime = true                 # port 6, uint32 seconds
+memfree = 131072              # port 3, uint32 (this number)
+buf_free = 10                 # port 5, uint32 (this number)
+
+[nodes.eps.requests.get_housekeeping]
+port = 8                      # 7-63; 0-6 are libcsp's services
+payload_hex = "01"            # optional; tells requests on one port apart
+reply = "housekeeping"        # a packet of this node, the reply's layout
 ```
 
 A telemetry mapping is the shorthand for a packet holding one signal: the same
@@ -202,7 +225,9 @@ A scenario defines ordered steps:
 - `inject_fault` — state override, signal override, or named fault request;
 - `wait` — advance virtual time;
 - `send_command` — reference a named command from setup config;
-- `assert` — evaluate telemetry against an expected condition.
+- `assert` — evaluate telemetry against an expected condition;
+- `request` — send a service request (`ping`, `uptime`, `memfree`, `buf_free`) or a
+  configured request from a simulated node, wait for the reply and check its fields.
 
 Scenario parsing is separate from scenario execution. Parsers can optionally
 cross-validate references against a parsed setup config before the runner starts.

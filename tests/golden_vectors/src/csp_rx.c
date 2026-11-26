@@ -1,11 +1,13 @@
 /*
  * A libcsp node that only listens: the receiving counterpart of csp_client.
  *
- * Usage: csp_rx <can:IFACE | kiss:DEVICE | zmq:HOST> <address> <version> <port|any> <seconds>
+ * Usage: csp_rx <can:IFACE | kiss:DEVICE | zmq:HOST> <address> <version> <port|any|services> <seconds>
  *
  * Opens the named libcsp interface as node <address> speaking CSP <version> (1 or 2), binds a
  * socket to <port> (or to every port), and prints one line per packet it receives for
- * <seconds> seconds, then the total:
+ * <seconds> seconds, then the total. With "services" it binds every port and hands each packet
+ * to libcsp's own csp_service_handler instead, so it answers ping, uptime, memfree and buf_free
+ * exactly as any libcsp node does (and prints the line before answering):
  *
  *   RX src=2 dst=1 dport=10 sport=10 len=4 first=42
  *   TOTAL 1
@@ -71,7 +73,8 @@ int main(int argc, char **argv) {
     const char *spec = argv[1];
     uint16_t address = (uint16_t)atoi(argv[2]);
     int version = atoi(argv[3]);
-    int port = (strcmp(argv[4], "any") == 0) ? CSP_ANY : atoi(argv[4]);
+    bool services = (strcmp(argv[4], "services") == 0);
+    int port = (services || (strcmp(argv[4], "any") == 0)) ? CSP_ANY : atoi(argv[4]);
     int seconds = atoi(argv[5]);
     if ((version != 1) && (version != 2)) {
         fprintf(stderr, "CSP version must be 1 or 2, got %s\n", argv[3]);
@@ -111,8 +114,12 @@ int main(int argc, char **argv) {
                    (unsigned)packet->length,
                    packet->length ? packet->data[0] : 0U);
             fflush(stdout);
-            csp_buffer_free(packet);
             received++;
+            if (services) {
+                csp_service_handler(packet); /* answers, or frees what it does not answer */
+            } else {
+                csp_buffer_free(packet);
+            }
         }
         csp_close(connection);
     }

@@ -37,6 +37,30 @@ class ModuleCommandRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ModuleRequest:
+    """A configured request that reached a simulated module, as its ``answer_request`` sees it.
+
+    A module answers a request by defining::
+
+        def answer_request(self, request: ModuleRequest, *, now: VirtualTime) -> dict | None
+
+    and returning one value per field of the request's reply packet (keyed by field name,
+    as in ``telemetry()``), or ``None`` to send no reply at all. A module without the hook
+    answers with its current ``telemetry()`` values, which covers the common "poll my
+    housekeeping" request without any code. The reply is encoded through the reply packet's
+    layout and sent on the bus like any other packet.
+    """
+
+    request: str
+    """The request's name under ``[nodes.<node>.requests]``."""
+    payload: bytes
+    """The request's payload as it arrived (CSP payload, any trailer included)."""
+    source: str | None
+    """The requesting node's name, or ``None`` for an address the setup does not name."""
+    source_address: int
+
+
+@dataclass(frozen=True, slots=True)
 class TelemetrySample:
     """One generated module telemetry sample on the decoded telemetry path."""
 
@@ -288,6 +312,7 @@ __all__ = [
     "ModuleCommandError",
     "ModuleCommandRequest",
     "ModuleError",
+    "ModuleRequest",
     "SimulatedModule",
     "TelemetrySample",
     "normalize_command",

@@ -1,0 +1,64 @@
+# The EPS answers requests as well as beaconing: libcsp's standard services (ping, uptime,
+# buf_free) and one request of its own that returns a housekeeping packet on demand.
+
+[transport]
+type = "in-memory"
+
+[nodes.obc]
+mode = "simulated"
+module_type = "obc_peer"
+address = 1
+
+[nodes.eps]
+mode = "simulated"
+module_type = "generic_eps"
+address = 2
+
+# What a libcsp node answers on ports 1, 6 and 5. A real board answers these by itself;
+# a simulated node does once they are switched on here.
+[nodes.eps.services]
+ping = true
+uptime = true
+buf_free = 10
+
+# A request of the EPS's own: an OBC sends 0x01 to port 8 and gets the housekeeping
+# packet back, on the request's ports.
+[nodes.eps.requests.get_housekeeping]
+port = 8
+payload_hex = "01"
+reply = "housekeeping"
+
+# periodic = false: this packet is only ever a reply, never beaconed, so it has no ports.
+[nodes.eps.packets.housekeeping]
+periodic = false
+
+[nodes.eps.packets.housekeeping.fields.battery_voltage_v]
+offset = 0
+length = 4
+type = "float"
+units = "V"
+
+[nodes.eps.packets.housekeeping.fields.battery_percent]
+offset = 4
+length = 4
+type = "float"
+units = "percent"
+
+[nodes.eps.packets.housekeeping.fields.cell_voltages_v]
+offset = 8
+length = 4
+count = 2
+type = "float"
+units = "V"
+
+[nodes.eps.packets.housekeeping.fields.power_mode]
+offset = 16
+bit_offset = 0
+bit_length = 2
+type = "uint"
+
+[nodes.eps.packets.housekeeping.fields.power_mode.enum]
+0 = "nominal"
+1 = "low_power"
+2 = "safe"
+3 = "off"

@@ -90,6 +90,7 @@ default           in-memory three-node satellite; OBC sheds the payload on a low
 socketcan-hil     the same run against a real bus: payload as hardware on SocketCAN vcan0
 csp-v1            the same satellite as CSP v1: CFP1 framing, 5-bit addresses, telemetry sent to the OBC
 eps-housekeeping  one EPS housekeeping packet with seven fields, an array and bit fields
+requests          an EPS that answers ping, uptime and a housekeeping request; a scenario asking
 module-params     retuning a built-in module through [nodes.<node>.params]
 thermal-heater    an OBC heater loop closing over the bus; companion to docs/writing-a-module.md
 ```
@@ -350,6 +351,9 @@ sudo ip link set up vcan0
   housekeeping struct; byte-aligned integers and floats of either byte order, bit fields
   (most significant bit first) and fixed-length arrays, with `scale`/`offset`. See
   [`docs/v1-scope.md`](docs/v1-scope.md#telemetry-wire-encoding).
+- Requests and replies: simulated nodes answer libcsp's ping, uptime, memfree and buf_free
+  and requests of their own, and a `request` scenario step asks any node, real or simulated,
+  and checks the reply. See [`docs/v1-scope.md`](docs/v1-scope.md#requests-and-replies).
 - Modules: Generic EPS, OBC Peer (rule engine), Simple Payload, RC thermal
   node -- plus your own, registered the same way the built-ins are
   ([`docs/writing-a-module.md`](docs/writing-a-module.md)).
