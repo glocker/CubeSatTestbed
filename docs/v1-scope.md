@@ -687,7 +687,9 @@ asking for HMAC, XTEA or RDP is not answered and is reported as a dropped packet
 (`reason=unanswerable`), never ignored silently. The setup is refused when a request or
 service port is also where the node takes a command or sends telemetry from.
 
-**The `request` scenario step** sends from a simulated `source` to any `target`, from an
+**The `request` scenario step** works on every transport, including between two simulated
+nodes on SocketCAN (see *Runtime model* for how their frames come back). It sends from a
+simulated `source` to any `target`, from an
 ephemeral source port (17-63, cycling, as libcsp's outgoing connections do), and waits up
 to `timeout` (default 1 s) for the first packet back from the target with the ports
 swapped:
@@ -740,6 +742,13 @@ type = "socketcan"
 interface = "vcan0" # or a physical interface such as "can0"
 receive_own_messages = false
 ```
+
+Linux does not hand a socket its own frames unless `receive_own_messages` is set, so the
+adapter does it for the frames that matter: a frame addressed to a node the testbed
+simulates goes out on the bus *and* is handed straight back, so commands, requests,
+replies and self-addressed telemetry between simulated nodes arrive as they do on the
+in-memory bus. With `receive_own_messages = true` the kernel returns every frame the
+testbed sends, including those to real nodes, and the adapter adds nothing.
 
 For local loopback on Linux, bring up `vcan0` first:
 

@@ -151,6 +151,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- On SocketCAN, a frame addressed to a simulated node now reaches it: Linux does not return a
+  socket's own frames unless `receive_own_messages` is set, so a command, a `request` step or a
+  reply between two simulated nodes used to vanish (a request failed with "no reply"), and an
+  OBC rule never saw a simulated EPS's self-addressed telemetry. The adapter now hands such
+  frames back itself, still sending them on the bus; with `receive_own_messages = true` the
+  kernel's echo is used as before.
 - Two telemetry signals of one node on the same source and destination ports (the shape of a real
   housekeeping packet, which each signal being its own packet cannot describe) passed validation
   and then aborted the run at the first telemetry frame with "matches multiple configured

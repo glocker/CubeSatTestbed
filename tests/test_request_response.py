@@ -588,3 +588,103 @@ def test_a_request_from_a_real_node_is_refused() -> None:
             "name: x\nsteps:\n  - {action: request, source: obc, target: eps, service: ping}\n",
             setup=setup,
         )
+
+
+# --- bug 16: simulated nodes talking to each other over SocketCAN -------------------------------
+
+
+class _SilentBus:
+    """A CAN bus as Linux gives it without receive_own_messages: a socket's own frames never
+    come back, and no other node is on it."""
+
+    def __init__(self) -> None:
+        self.sent: list[can.Message] = []
+
+    def send(self, msg: can.Message, timeout: float | None = None) -> None:
+        self.sent.append(msg)
+
+    def recv(self, timeout: float | None = None) -> can.Message | None:
+        return None
+
+    def shutdown(self) -> None:
+        pass
+
+
+SIMULATED_PAIR_ON_SOCKETCAN = """
+[transport]
+type = "socketcan"
+interface = "vcan0"
+{own}
+
+[nodes.obc]
+mode = "simulated"
+module_type = "obc_peer"
+address = 1
+
+[nodes.eps]
+mode = "simulated"
+module_type = "generic_eps"
+address = 2
+
+[nodes.eps.services]
+ping = true
+"""
+
+
+def _on_silent_bus(monkeypatch: pytest.MonkeyPatch, bus: _SilentBus, *, own: bool) -> None:
+    def build(*_args: object, **kwargs: object) -> SocketCanAdapter:
+        return SocketCanAdapter(
+            interface="vcan0",
+            bus=bus,
+            receive_own_messages=own,
+            local_addresses=kwargs["local_addresses"],  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setattr(runner_module, "build_transport_adapter", build)
+
+
+def test_a_request_between_simulated_nodes_on_socketcan_is_answered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = _SilentBus()
+    _on_silent_bus(monkeypatch, bus, own=False)
+
+    result, _out, trace = _run(
+        SIMULATED_PAIR_ON_SOCKETCAN.format(own=""),
+        "  - {action: request, source: obc, target: eps, service: ping}\n",
+    )
+
+    assert result.passed, _details(result)
+    # Both packets still went out on the bus, where a real analyser or node would see them.
+    assert len(bus.sent) == 2
+    assert "request ping to eps" in trace and "reply ping from eps" in trace
+
+
+def test_with_receive_own_messages_the_kernel_echo_is_not_doubled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = _SilentBus()
+    _on_silent_bus(monkeypatch, bus, own=True)
+
+    result, _out, _trace = _run(
+        SIMULATED_PAIR_ON_SOCKETCAN.format(own="receive_own_messages = true"),
+        "  - {action: request, source: obc, target: eps, service: ping, timeout: 200ms}\n",
+    )
+
+    # The adapter leaves the echo to the kernel, which this scripted bus does not provide.
+    assert not result.passed
+
+
+def test_a_frame_for_a_real_node_is_not_handed_back() -> None:
+    bus = _SilentBus()
+    adapter = SocketCanAdapter(interface="vcan0", bus=bus, local_addresses=(1,))
+
+    (to_real,) = fragment_packet(CspFields(2, 1, 3, 10, 10), b"\x00")
+    (to_local,) = fragment_packet(CspFields(2, 3, 1, 10, 10), b"\x00")
+    adapter.send(to_real)
+    adapter.send(to_local)
+
+    received = adapter.receive()
+    assert received is not None and received.frame == to_local
+    assert adapter.receive() is None
+    assert len(bus.sent) == 2

@@ -35,10 +35,11 @@ def build_transport_adapter(
     validated config; ``socketcan_bus`` exists for tests or advanced callers that
     already own a ``python-can`` bus object.
 
-    ``local_addresses`` and ``max_packet_bytes`` apply only to the whole-packet links
-    (``kiss``, ``zmq``): the CSP addresses of the nodes the testbed simulates
-    (delivered locally, never put on the link) and the receive buffer applied to
-    what is read from it.
+    ``local_addresses`` are the CSP addresses of the nodes the testbed simulates. On the
+    whole-packet links (``kiss``, ``zmq``) a packet for one of them is delivered locally and
+    never put on the link; on ``socketcan`` it goes on the bus and is also handed back
+    locally (unless ``receive_own_messages`` already returns it). ``max_packet_bytes``
+    applies only to the whole-packet links: the receive buffer applied to what is read.
 
     ``protocol_version`` is the CSP version the link speaks: v1 or v2 on every transport.
     """
@@ -52,6 +53,7 @@ def build_transport_adapter(
             send_timeout=socketcan_send_timeout,
             bus=socketcan_bus,
             protocol_version=protocol_version,
+            local_addresses=local_addresses,
         )
     if isinstance(config, KissTransportConfig):
         return KissAdapter.open(

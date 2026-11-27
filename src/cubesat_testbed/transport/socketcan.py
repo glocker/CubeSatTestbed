@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import math
 import re
+from collections import deque
+from collections.abc import Iterable
 from types import TracebackType
 from typing import Protocol, Self, cast
 
@@ -52,6 +54,13 @@ class SocketCanAdapter(TransportAdapter):
     adapters. Endpoint-specific receive queues are not available on SocketCAN;
     callers should use the default receive stream and decode/filter frames at
     the protocol layer.
+
+    ``local_addresses`` are the nodes the testbed simulates. A frame sent to one of them
+    still goes out on the bus, and is also handed straight back to the receive stream,
+    because Linux does not return a socket's own frames unless ``receive_own_messages`` is
+    set; without this, a command or a request from one simulated node to another would
+    never arrive. With ``receive_own_messages`` the kernel returns every frame already, so
+    nothing is handed back twice.
     """
 
     def __init__(
@@ -62,6 +71,7 @@ class SocketCanAdapter(TransportAdapter):
         send_timeout: float | None = 0.0,
         bus: CanBusLike | None = None,
         protocol_version: int = 2,
+        local_addresses: Iterable[int] = (),
     ) -> None:
         self._can_protocol = can_protocol_for(protocol_version)
         self.interface = _validate_interface(interface)
@@ -75,6 +85,8 @@ class SocketCanAdapter(TransportAdapter):
                 receive_own_messages=self.receive_own_messages,
             )
         )
+        self._local_addresses = frozenset(local_addresses)
+        self._loopback: deque[CanFrame] = deque()
         self._next_sequence = 0
         self._closed = False
 
@@ -120,6 +132,11 @@ class SocketCanAdapter(TransportAdapter):
             raise TransportError(
                 f"failed to send CAN frame on SocketCAN interface {self.interface!r}: {exc}"
             ) from exc
+        if (
+            not self.receive_own_messages
+            and self._can_protocol.frame_destination(frame) in self._local_addresses
+        ):
+            self._loopback.append(frame)
         return self._envelope(frame, source=validated_source)
 
     def receive(
@@ -143,6 +160,8 @@ class SocketCanAdapter(TransportAdapter):
                 "endpoint-specific receive queues are not available"
             )
 
+        if self._loopback:
+            return self._envelope(self._loopback.popleft(), source=None)
         bus_timeout = 0.0 if timeout is None else _validate_optional_timeout("timeout", timeout)
         try:
             message = self._bus.recv(timeout=bus_timeout)
