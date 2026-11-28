@@ -688,3 +688,84 @@ def test_a_frame_for_a_real_node_is_not_handed_back() -> None:
     assert received is not None and received.frame == to_local
     assert adapter.receive() is None
     assert len(bus.sent) == 2
+
+
+# --- bug 17: only real service traffic is kept quiet --------------------------------------------
+
+THREE_NODES_ON_SOCKETCAN = """
+[transport]
+type = "socketcan"
+interface = "vcan0"
+
+[nodes.obc]
+mode = "simulated"
+module_type = "obc_peer"
+address = 1
+
+[nodes.eps]
+mode = "hardware"
+address = 2
+
+[nodes.payload]
+mode = "hardware"
+address = 3
+"""
+
+
+def _observe(monkeypatch: pytest.MonkeyPatch, fields: CspFields) -> str:
+    _on_bus(monkeypatch, _ReplyingBus(_frames(fields, b"\x01\x02"), answer=False))
+    _result, _out, trace = _run(THREE_NODES_ON_SOCKETCAN, "  - {action: wait, virtual_time: 1s}\n")
+    return trace
+
+
+def _route_warnings(recwarn: pytest.WarningsRecorder) -> list[str]:
+    return [str(w.message) for w in recwarn if "no configured route" in str(w.message)]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        CspFields(2, 3, 2, 1, 10),  # to port 1, but from fixed port 10: not a ping
+        CspFields(2, 2, 3, 10, 6),  # from port 6, but to fixed port 10: not an uptime reply
+    ],
+)
+def test_unmapped_traffic_on_a_service_port_is_still_warned_about(
+    monkeypatch: pytest.MonkeyPatch, recwarn: pytest.WarningsRecorder, fields: CspFields
+) -> None:
+    trace = _observe(monkeypatch, fields)
+
+    (message,) = _route_warnings(recwarn)
+    assert f"dport={fields.destination_port} sport={fields.source_port}" in message
+    assert "unrouted" in trace
+    assert "request " not in trace and "reply " not in trace
+
+
+@pytest.mark.parametrize(
+    ("fields", "label"),
+    [
+        (CspFields(2, 3, 2, 1, 23), "request ping to eps"),
+        (CspFields(2, 2, 3, 23, 1), "reply ping from eps"),
+        (CspFields(2, 2, 3, 40, 6), "reply uptime from eps"),
+    ],
+)
+def test_service_traffic_between_real_nodes_is_observed_quietly(
+    monkeypatch: pytest.MonkeyPatch,
+    recwarn: pytest.WarningsRecorder,
+    fields: CspFields,
+    label: str,
+) -> None:
+    trace = _observe(monkeypatch, fields)
+
+    assert _route_warnings(recwarn) == []
+    assert label in trace
+
+
+def test_a_configured_request_port_needs_an_ephemeral_peer_port_too(
+    monkeypatch: pytest.MonkeyPatch, recwarn: pytest.WarningsRecorder
+) -> None:
+    setup = THREE_NODES_ON_SOCKETCAN + HOUSEKEEPING
+    for fields, quiet in ((CspFields(2, 3, 2, 8, 23), True), (CspFields(2, 3, 2, 8, 10), False)):
+        recwarn.clear()
+        _on_bus(monkeypatch, _ReplyingBus(_frames(fields, b"\x01"), answer=False))
+        _run(setup, "  - {action: wait, virtual_time: 1s}\n")
+        assert (_route_warnings(recwarn) == []) is quiet, fields

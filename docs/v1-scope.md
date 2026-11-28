@@ -710,7 +710,11 @@ for `ping` also when the echo differs) and one per `expect` entry (`uptime_s`,
 `memfree_bytes` and `buf_free` are the fields of the value services' replies). They count
 in the summary, `--json`, JUnit and the HTML report, where each links to the reply frame.
 `--trace` names every request and reply frame (`request ping to eps`, `reply uptime from eps
-uptime_s=3`, `reply eps.requests.get_housekeeping battery_percent=...`). As with telemetry,
+uptime_s=3`, `reply eps.requests.get_housekeeping battery_percent=...`). A frame counts as a
+request or reply only when one of its ports is the service (or request) port and the other is
+an ephemeral port, 17-63, where a libcsp client asks from and gets its answer: requests and
+replies between other nodes are then observed quietly, and anything else on ports 1, 3, 5 or 6
+that matches no route is still traced as `unrouted` and warned about. As with telemetry,
 a reply is only ever judged from the bytes that crossed the bus.
 
 On a real-time run (`--realtime`, a real peer) the step ends at the next virtual instant

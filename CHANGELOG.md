@@ -151,6 +151,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A packet that matches no route and uses port 1, 3, 5 or 6 is warned about and traced as
+  `unrouted` again, unless it really is a service request or reply (its other port is ephemeral,
+  17-63). The request/reply support briefly took every such packet for service traffic, so a
+  board's unmapped telemetry on port 1 was silently swallowed and traced as `request ping`.
+  Configured requests follow the same rule.
 - On SocketCAN, a frame addressed to a simulated node now reaches it: Linux does not return a
   socket's own frames unless `receive_own_messages` is set, so a command, a `request` step or a
   reply between two simulated nodes used to vanish (a request failed with "no reply"), and an

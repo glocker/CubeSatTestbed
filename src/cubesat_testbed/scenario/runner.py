@@ -237,6 +237,9 @@ class _RequestAnsweringModule(Protocol):
 
 _SERVICE_NAMES_BY_PORT = {port: name for name, port in CSP_SERVICE_PORTS.items()}
 
+_EPHEMERAL_PORT_MAX = 63
+"""The highest CSP port (6 bits, in v1 and v2): the top of libcsp's outgoing-port range."""
+
 _UPTIME_DIVISOR_US = 1_000_000
 
 
@@ -885,8 +888,7 @@ class ScenarioRunner:
     def _allocate_ephemeral_port(self, source: int, target: int) -> int:
         """The next free source port of ``source``, cycling 17-63 like libcsp's connections."""
 
-        maximum = 63
-        span = maximum - CSP_EPHEMERAL_PORT_MIN + 1
+        span = _EPHEMERAL_PORT_MAX - CSP_EPHEMERAL_PORT_MIN + 1
         start = self._next_ephemeral_port.get(source, CSP_EPHEMERAL_PORT_MIN)
         for offset in range(span):
             port = CSP_EPHEMERAL_PORT_MIN + (start - CSP_EPHEMERAL_PORT_MIN + offset) % span
@@ -1030,17 +1032,11 @@ class ScenarioRunner:
 
         Such packets are observed (``--trace`` names them), not warned about: a real OBC
         pinging a real board, or the in-memory bus handing the testbed its own reply back.
+        Anything else that matches no route is still warned about (see
+        :func:`_classify_request`).
         """
 
-        if fields.destination_port in _SERVICE_NAMES_BY_PORT:
-            return True
-        if fields.source_port in _SERVICE_NAMES_BY_PORT:
-            return True
-        return any(
-            (route.address == fields.destination and route.port == fields.destination_port)
-            or (route.address == fields.source and route.port == fields.source_port)
-            for route in self.runtime.request_routes
-        )
+        return _classify_request(fields, self.runtime.request_routes) is not None
 
     def _record_telemetry(self, event: SimulationEvent, _engine: DiscreteEventEngine) -> None:
         if not isinstance(event.payload, TelemetryPayload):
@@ -1841,37 +1837,75 @@ def _telemetry_annotation(route: _TelemetryRoute, payload: bytes) -> str:
     return f"telemetry {route.label} {fields}"
 
 
+def _is_ephemeral_port(port: int) -> bool:
+    return CSP_EPHEMERAL_PORT_MIN <= port <= _EPHEMERAL_PORT_MAX
+
+
+def _classify_request(
+    fields: PacketFields, request_routes: tuple[_RequestRoute, ...]
+) -> tuple[str, str, _RequestRoute | None] | None:
+    """Whether a packet is a service or configured request, or the reply to one.
+
+    Returns ``(kind, service, route)`` with ``kind`` ``"request"`` or ``"reply"`` and either
+    the service's name (``route`` ``None``) or the configured request's route, or ``None``.
+    A libcsp client always asks from an ephemeral source port (17-63) and the reply goes back
+    to it, so one side of the pair must be on the service (or request) port and the other on
+    an ephemeral port. A packet on port 1 whose other port is not ephemeral is not taken for a
+    ping: it is unrouted traffic and stays visible as such.
+    """
+
+    for route in request_routes:
+        if (
+            route.address == fields.destination
+            and route.port == fields.destination_port
+            and _is_ephemeral_port(fields.source_port)
+        ):
+            return ("request", route.request, route)
+        if (
+            route.address == fields.source
+            and route.port == fields.source_port
+            and _is_ephemeral_port(fields.destination_port)
+        ):
+            return ("reply", route.request, route)
+    service = _SERVICE_NAMES_BY_PORT.get(fields.destination_port)
+    if service is not None and _is_ephemeral_port(fields.source_port):
+        return ("request", service, None)
+    service = _SERVICE_NAMES_BY_PORT.get(fields.source_port)
+    if service is not None and _is_ephemeral_port(fields.destination_port):
+        return ("reply", service, None)
+    return None
+
+
 def _request_annotation(
     packet: PacketView, request_routes: tuple[_RequestRoute, ...], names: Mapping[int, str]
 ) -> str | None:
     """Name a request or reply frame: ``request ping to eps``, ``reply eps.requests.hk ...``."""
 
     fields = packet.fields
-    for route in request_routes:
-        if route.address == fields.destination and route.port == fields.destination_port:
+    classified = _classify_request(fields, request_routes)
+    if classified is None:
+        return None
+    kind, service, route = classified
+    if route is not None:
+        if kind == "request":
             return f"request {route.name}"
-        if route.address == fields.source and route.port == fields.source_port:
-            try:
-                data = strip_crc32(packet.payload, fields.flags)
-                decoded = route.codec.decode(data)
-            except (ServiceRequestError, TelemetryCodecError) as exc:
-                return f"reply {route.name} undecodable={str(exc)!r}"
-            shown = " ".join(f"{key}={value!r}" for key, value in decoded.items())
-            return f"reply {route.name} {shown}"
-    service = _SERVICE_NAMES_BY_PORT.get(fields.destination_port)
-    if service is not None:
-        return f"request {service} to {names.get(fields.destination, fields.destination)}"
-    service = _SERVICE_NAMES_BY_PORT.get(fields.source_port)
-    if service is not None:
-        sender = names.get(fields.source, fields.source)
-        if service == "ping":
-            return f"reply ping from {sender}"
         try:
-            value = decode_uint32_reply(strip_crc32(packet.payload, fields.flags))
-        except ServiceRequestError as exc:
-            return f"reply {service} from {sender} undecodable={str(exc)!r}"
-        return f"reply {service} from {sender} {SERVICE_REPLY_FIELDS[service]}={value}"
-    return None
+            data = strip_crc32(packet.payload, fields.flags)
+            decoded = route.codec.decode(data)
+        except (ServiceRequestError, TelemetryCodecError) as exc:
+            return f"reply {route.name} undecodable={str(exc)!r}"
+        shown = " ".join(f"{key}={value!r}" for key, value in decoded.items())
+        return f"reply {route.name} {shown}"
+    if kind == "request":
+        return f"request {service} to {names.get(fields.destination, fields.destination)}"
+    sender = names.get(fields.source, fields.source)
+    if service == "ping":
+        return f"reply ping from {sender}"
+    try:
+        value = decode_uint32_reply(strip_crc32(packet.payload, fields.flags))
+    except ServiceRequestError as exc:
+        return f"reply {service} from {sender} undecodable={str(exc)!r}"
+    return f"reply {service} from {sender} {SERVICE_REPLY_FIELDS[service]}={value}"
 
 
 def _seconds(microseconds: int) -> str:
